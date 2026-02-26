@@ -71,7 +71,14 @@ def cmd_setup():
         logger.info("  Gemini (fallback): NOT SET — optional, get free key at https://aistudio.google.com/apikey")
 
     if tiktok_keys_present and tiktok_enabled:
-        logger.info("  TikTok: OK")
+        try:
+            from agents.tiktok_auth import has_tiktok_token
+            if has_tiktok_token():
+                logger.info("  TikTok: OK (OAuth connected)")
+            else:
+                logger.info("  TikTok: KEYS SET but OAuth required — run 'python main.py --tiktok-oauth' or use Setup > Connect TikTok")
+        except Exception:
+            logger.info("  TikTok: OK")
     elif tiktok_keys_present and not tiktok_enabled:
         logger.info("  TikTok: KEYS SET but 'enabled' is false — set tiktok.enabled to true in settings.yaml to activate")
     else:
@@ -164,7 +171,7 @@ def _run_phase(name: str, fn, *args, retries: int | None = None, **kwargs) -> di
     return {"error": str(last_error), "attempts": retries}
 
 
-def cmd_run(category: str | None = None, count: int | None = None, max_retries: int | None = None):
+def cmd_run(category: str | None = None, count: int | None = None, max_retries: int | None = None, platform: str | None = None):
     """Run the full content pipeline with retry logic and phase gating.
     Each phase retries up to max_retries times on failure (default from config).
     If a critical phase (discovery/ideation) produces no output after all
@@ -185,7 +192,12 @@ def cmd_run(category: str | None = None, count: int | None = None, max_retries: 
     # Phase 1: Discovery (non-blocking -- later phases can work with existing DB data)
     logger.info("--- Phase 1: Trend Discovery ---")
     from agents.discovery import run_discovery
-    results["discovery"] = _run_phase("Discovery", run_discovery, retries=retries_arg)
+    disc_platforms = platform if platform and platform != "both" else None
+    results["discovery"] = _run_phase(
+        "Discovery",
+        lambda: run_discovery(platforms=disc_platforms or "both"),
+        retries=retries_arg,
+    )
     logger.info("Discovery: %s", results["discovery"])
 
     # Phase 2: Ideation (critical -- scripts drive the rest of the pipeline)
@@ -509,11 +521,12 @@ def main():
     group.add_argument("--regenerate", action="store_true", help="Regenerate a single video with overrides")
     group.add_argument("--reaction-discovery", action="store_true", help="Discover YouTube reaction clip candidates (human review required)")
     group.add_argument("--reaction-extract", action="store_true", help="Extract clips for approved reaction candidates")
+    group.add_argument("--tiktok-oauth", action="store_true", help="Run TikTok OAuth flow (authorize app for Content Posting API)")
 
     parser.add_argument("--script-id", type=int, help="Script ID for regenerate")
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
     parser.add_argument("--music-path", type=str, help="Music file path override for regenerate")
-    parser.add_argument("--platform", type=str, choices=["youtube", "tiktok"], help="Upload to specific platform only (youtube or tiktok)")
+    parser.add_argument("--platform", type=str, choices=["youtube", "tiktok", "both"], help="Discovery: scrape youtube, tiktok, or both. Upload: youtube or tiktok only.")
     parser.add_argument("--category", type=str, help="Script category for ideation (motivational/funny/meme/news/storytime/howto/pov)")
     parser.add_argument("--count", type=int, help="Number of scripts to generate")
     parser.add_argument("--retries", type=int, help="Override max retries per phase (default: from config or 3)")
@@ -527,12 +540,13 @@ def main():
         init_db()
         logger.info("--- Discovery Only ---")
         from agents.discovery import run_discovery
-        result = run_discovery()
+        result = run_discovery(platforms=args.platform or "both")
         logger.info("Discovery: %s", result)
     elif args.run:
-        cmd_run(category=args.category, count=args.count, max_retries=args.retries)
+        cmd_run(category=args.category, count=args.count, max_retries=args.retries, platform=args.platform)
     elif args.upload:
-        cmd_upload(platform=args.platform)
+        upload_platform = None if (args.platform is None or args.platform == "both") else args.platform
+        cmd_upload(platform=upload_platform)
     elif args.cleanup:
         cmd_cleanup()
     elif args.music:
@@ -560,6 +574,14 @@ def main():
         else:
             paths = run_extraction()
             logger.info("Extracted %d clips to assets/reaction_clips/", len(paths))
+    elif args.tiktok_oauth:
+        from agents.tiktok_auth import run_oauth_flow
+        logger.info("--- TikTok OAuth ---")
+        if run_oauth_flow():
+            logger.info("TikTok OAuth complete. Tokens saved. You can now enable TikTok uploads.")
+        else:
+            logger.error("TikTok OAuth failed. Check client_key, client_secret, and redirect_uri in settings.yaml")
+            sys.exit(1)
 
 
 if __name__ == "__main__":

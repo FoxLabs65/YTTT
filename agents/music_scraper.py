@@ -23,6 +23,12 @@ import requests as http_requests
 from models.config import get as cfg
 from models.database import get_connection, insert_asset
 
+# Topic modifiers for music search (when script inspired by gaming/roblox trends)
+TOPIC_MUSIC_MODIFIERS = {
+    "gaming": ["gaming", "game"],
+    "roblox": ["playful", "roblox"],
+}
+
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -98,33 +104,6 @@ CATEGORY_MUSIC_MAP = {
         ],
         "freesound_tags": ["ambient", "calm", "acoustic", "lo-fi", "gentle", "atmospheric"],
         "mood": "chill",
-    },
-    "gaming": {
-        "queries": [
-            "no copyright gaming background music",
-            "royalty free epic gaming music",
-            "energetic electronic music no copyright",
-            "upbeat gaming montage music free",
-            "8-bit chiptune gaming music royalty free",
-            "intense gaming music no copyright",
-            "victory gaming music royalty free",
-            "playful game music no copyright",
-        ],
-        "freesound_tags": ["gaming", "electronic", "chiptune", "epic", "energetic", "8-bit"],
-        "mood": "quirky",
-    },
-    "roblox": {
-        "queries": [
-            "no copyright roblox style music",
-            "royalty free playful game music",
-            "upbeat cartoon music no copyright",
-            "fun kids game music royalty free",
-            "happy electronic music no copyright",
-            "playful ukulele game music free",
-            "bouncy fun music royalty free",
-        ],
-        "freesound_tags": ["playful", "fun", "happy", "game", "electronic", "bouncy"],
-        "mood": "funny",
     },
     "howto": {
         "queries": [
@@ -355,13 +334,20 @@ def _download_freesound_preview(sound: dict, dest_dir: Path) -> Path | None:
     return None
 
 
-def search_and_download_music(category: str, count: int = 3) -> list[Path]:
+def search_and_download_music(category: str, count: int = 3, trend_topic: str | None = None) -> list[Path]:
     """Search for royalty-free music matching a content category from multiple sources.
     Randomizes query order for variety across runs.
+    If trend_topic is set (gaming, roblox), prepends topic-augmented queries.
     """
     _ensure_dirs()
     music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
-    queries = list(music_config["queries"])
+    base_queries = list(music_config["queries"])
+    if trend_topic and trend_topic in TOPIC_MUSIC_MODIFIERS:
+        modifiers = TOPIC_MUSIC_MODIFIERS[trend_topic]
+        augmented = [f"{q} {mod}" for q in base_queries[:2] for mod in modifiers[:1]]
+        queries = augmented + base_queries
+    else:
+        queries = base_queries
     freesound_tags = music_config.get("freesound_tags", [])
     mood = music_config["mood"]
     mood_dir = MUSIC_DIR / mood
@@ -464,24 +450,35 @@ def scan_local_library() -> dict[str, list[Path]]:
     return library
 
 
-def find_best_music(category: str, script_tags: list[str] | None = None) -> Path | None:
+def find_best_music(category: str, script_tags: list[str] | None = None,
+                    trend_topic: str | None = None) -> Path | None:
     """Find a matching music track for a script's category and tags.
     Randomizes selection within each priority tier to avoid reusing the same
     track across every video.
 
     Priority:
-    1. Tag-matched tracks from the correct mood folder
-    2. Random track from the correct mood folder
-    3. Manually placed .mp3 files in the root music dir
-    4. Any available track from another mood as fallback
+    1. Topic-matched tracks (when trend_topic set, e.g. gaming/roblox)
+    2. Tag-matched tracks from the correct mood folder
+    3. Random track from the correct mood folder
+    4. Manually placed .mp3 files in the root music dir
+    5. Any available track from another mood as fallback
     """
     music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
     target_mood = music_config["mood"]
 
     library = scan_local_library()
 
-    # Priority 1 & 2: mood-matched tracks
+    # Priority 1: topic-matched tracks (when script inspired by gaming/roblox trends)
     mood_tracks = library.get(target_mood, [])
+    if mood_tracks and trend_topic and trend_topic in TOPIC_MUSIC_MODIFIERS:
+        topic_terms = TOPIC_MUSIC_MODIFIERS[trend_topic]
+        topic_matches = [t for t in mood_tracks if any(term in t.stem.lower() for term in topic_terms)]
+        if topic_matches:
+            pick = random.choice(topic_matches)
+            logger.info("Topic-matched music: %s (topic: %s)", pick.name, trend_topic)
+            return pick
+
+    # Priority 2 & 3: tag-matched or mood-matched tracks
     if mood_tracks:
         if script_tags:
             tag_set = {t.lower() for t in script_tags}
@@ -534,20 +531,21 @@ def ensure_music_for_category(category: str, min_tracks: int = 2) -> list[Path]:
 
 # --- Integration with sourcing pipeline ---
 
-def source_music_for_script(script_id: int, category: str, tags: list[str] | None = None) -> Path | None:
+def source_music_for_script(script_id: int, category: str, tags: list[str] | None = None,
+                           trend_topic: str | None = None) -> Path | None:
     """Full music sourcing pipeline for a script:
-    1. Check local library for matching track
-    2. If insufficient, download from Pixabay Music
+    1. Check local library for matching track (topic-matched if trend_topic set)
+    2. If insufficient, download with topic-augmented queries when applicable
     3. Insert asset record into database
     4. Return path to selected track
     """
-    # Try local first
-    track_path = find_best_music(category, tags)
+    # Try local first (with topic preference when applicable)
+    track_path = find_best_music(category, tags, trend_topic=trend_topic)
 
-    # Download if nothing available
+    # Download if nothing available (with topic-augmented queries when applicable)
     if not track_path:
         logger.info("No local music for category '%s', downloading...", category)
-        downloaded = search_and_download_music(category, count=2)
+        downloaded = search_and_download_music(category, count=2, trend_topic=trend_topic)
         if downloaded:
             track_path = downloaded[0]
 

@@ -16,7 +16,7 @@ import streamlit as st
 
 from models.config import load_config, save_config, reload_config
 from models.database import get_connection, get_top_trends, get_top_tags, get_trend_categories, purge_discovery_data
-from ui.components import section_header, metric_card, log_viewer, live_log_viewer
+from ui.components import section_header, metric_card, log_viewer, static_log_viewer
 from ui.runner import get_runner
 
 
@@ -129,39 +129,24 @@ def render():
                         st.session_state.pop("_disc_tt_confirm", None)
                         st.rerun()
 
-    # Content Categories (for script generation, not scraping)
-    st.markdown("**Content Categories**")
+    # Script Categories (for script generation, not scraping)
+    st.markdown("**Script Categories**")
     st.caption(
-        "These control which *script types* the pipeline generates (motivational, funny, meme, etc.). "
-        "They do not affect scraping — YouTube queries and TikTok hashtags above define what gets scraped. "
-        "Content categories define what mix of scripts to write from the discovered trends."
+        "Select which *script styles* the pipeline can generate. "
+        "Discovery topics (YouTube queries / TikTok hashtags above) define what gets scraped. "
+        "Script categories define the style of scripts written from those trends."
     )
-    preset_cats = ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"]
+    script_cats = ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"]
     ideation_cfg = cfg.get("ideation", {})
-    current_cats = ideation_cfg.get("categories", preset_cats)
+    current_cats = ideation_cfg.get("categories", script_cats)
     if not isinstance(current_cats, list):
-        current_cats = preset_cats
-    # Build full list: preset + any custom that were added previously
-    custom_added = [c for c in current_cats if c not in preset_cats]
-    all_cats = preset_cats + custom_added
+        current_cats = script_cats
+    # Filter to only allowed script categories (ignore legacy custom entries like gaming)
+    current_cats = [c for c in current_cats if c in script_cats]
     selected_cats = []
-    for i, cat in enumerate(all_cats):
-        c1, c2 = st.columns([3, 1])
-        with c1:
-            if st.checkbox(cat.title(), value=cat in current_cats, key=f"disc_cat_{cat}"):
-                selected_cats.append(cat)
-        with c2:
-            if st.button("🗑️", key=f"disc_cat_del_{cat}", help="Remove from list"):
-                updated = [c for c in current_cats if c != cat]
-                _save_discovery_criteria(cfg, disc.get("youtube_queries", []), disc.get("tiktok_hashtags", []), updated)
-                st.rerun()
-    custom = st.text_input("Add custom category", key="disc_custom_cat", placeholder="e.g. wellness")
-    if custom and st.button("Add category", key="disc_add_cat_btn"):
-        new_cat = custom.strip().lower()
-        if new_cat and new_cat not in all_cats:
-            updated = list(current_cats) + [new_cat]
-            _save_discovery_criteria(cfg, disc.get("youtube_queries", []), disc.get("tiktok_hashtags", []), updated)
-            st.rerun()
+    for cat in script_cats:
+        if st.checkbox(cat.title(), value=cat in current_cats, key=f"disc_cat_{cat}"):
+            selected_cats.append(cat)
 
     # Save criteria
     if st.button("Save Search Criteria", type="primary"):
@@ -173,12 +158,15 @@ def render():
 
     # ── Run Discovery ───────────────────────────────────────────
     section_header("Run Discovery")
-    col_run, col_stop, col_status = st.columns([1, 1, 2])
+    col_platform, col_run, col_stop, col_status = st.columns([1, 1, 1, 2])
+    with col_platform:
+        scrape_platform = st.selectbox("Scrape from", ["both", "youtube", "tiktok"], key="disc_scrape_platform", help="Which platforms to scrape")
     with col_run:
         if st.button("Scrape Now", type="primary", disabled=runner.is_running, width="stretch"):
             # Auto-save current selection so backend uses it (config is read fresh by subprocess)
             _save_discovery_criteria(cfg, new_yt, new_tt, selected_cats)
-            runner.start("discovery")
+            extra = ["--platform", scrape_platform] if scrape_platform != "both" else []
+            runner.start("discovery", extra)
             st.toast("Search criteria saved and discovery started!")
             st.rerun()
     with col_stop:
@@ -205,7 +193,7 @@ def render():
     # Live log with elapsed time (auto-refreshes every 2s when running)
     if runner.is_running and runner.task_name == "discovery":
         with st.expander("Live Log", expanded=True):
-            live_log_viewer(task_name="discovery", lines=40)
+            static_log_viewer(task_name="discovery", lines=40)
 
     st.divider()
 
@@ -216,7 +204,7 @@ def render():
 
     # Category filter: use actual categories from trends (includes "other" for uncategorized)
     trend_cats = get_trend_categories(conn, hours=lookback)
-    cat_options = ["All"] + sorted(set(trend_cats) | set(all_cats)) if trend_cats else ["All"] + all_cats
+    cat_options = ["All"] + sorted(set(trend_cats) | set(script_cats)) if trend_cats else ["All"] + script_cats
 
     col_filter1, col_filter2, col_filter3 = st.columns(3)
     with col_filter1:

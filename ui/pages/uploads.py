@@ -14,7 +14,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 
 from models.database import get_connection, get_pending_uploads, get_videos_by_status
-from ui.components import section_header, status_badge, metric_card, live_log_viewer
+from ui.components import section_header, status_badge, metric_card, static_log_viewer
 from ui.runner import get_runner
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -72,7 +72,7 @@ def render():
     upload_active = runner.task_name == "upload" and (runner.is_running or runner.status in ("completed", "failed"))
     if upload_active:
         with st.expander("Upload Log", expanded=True):
-            live_log_viewer(task_name="upload", lines=40)
+            static_log_viewer(task_name="upload", lines=40)
         if st.button("Refresh", help="Refresh page to see latest status"):
             st.rerun()
 

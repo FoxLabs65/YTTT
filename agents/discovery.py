@@ -224,11 +224,18 @@ def scrape_tiktok_trending(hashtags: list[str] | None = None, max_per_tag: int =
     return all_trends
 
 
-def run_discovery() -> dict:
-    """Run full discovery pipeline. Returns summary dict."""
-    logger.info("Starting trend discovery...")
-    yt_trends = scrape_youtube_shorts()
-    tt_trends = scrape_tiktok_trending()
+def run_discovery(platforms: str | list[str] | None = None) -> dict:
+    """Run discovery pipeline. platforms: 'youtube', 'tiktok', 'both', or list. Default 'both'."""
+    if platforms is None:
+        platforms = "both"
+    if isinstance(platforms, str):
+        platforms = [p.strip().lower() for p in platforms.split(",")] if platforms != "both" else ["youtube", "tiktok"]
+    if "both" in platforms:
+        platforms = ["youtube", "tiktok"]
+
+    logger.info("Starting trend discovery (platforms: %s)...", platforms)
+    yt_trends = scrape_youtube_shorts() if "youtube" in platforms else []
+    tt_trends = scrape_tiktok_trending() if "tiktok" in platforms else []
 
     conn = get_connection()
     top = get_top_trends(conn, limit=20)

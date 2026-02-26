@@ -19,6 +19,7 @@ from models.database import (
     get_connection,
     get_scripts_by_status,
     get_assets_for_script,
+    get_dominant_trend_topic,
     insert_asset,
     update_script_status,
     reset_stuck_scripts,
@@ -503,10 +504,23 @@ STOP_WORDS = frozenset({
 
 def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> list[str]:
     """Extract specific, searchable visual keywords from the script text.
-    Focuses on concrete nouns, named entities, and visual objects that
-    stock libraries can match.
+    Focuses on [show X] cues, concrete nouns, named entities, and visual objects
+    that stock libraries can match.
     """
     keywords = []
+
+    # Extract [show X] cues FIRST (highest priority - explicit LLM visual directions)
+    bracket_cues = re.findall(r"\[(.*?)\]", script_body)
+    for cue in bracket_cues:
+        clean = re.sub(
+            r"\b(show|footage|clip|stock|effect|animation|visual|graphic)\b",
+            "",
+            cue,
+            flags=re.IGNORECASE,
+        )
+        clean = re.sub(r"\s+", " ", clean).strip()
+        if len(clean) > 3:
+            keywords.append(clean)
 
     # Extract noun phrases from title
     title_clean = re.sub(r"[^\w\s]", "", title)
@@ -514,15 +528,15 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
     if title_words:
         keywords.append(" ".join(title_words[:4]))
 
-    # Extract concrete visual terms from script body (strip [visual cues] first)
+    # Extract concrete visual terms from script body (strip [visual cues] for word analysis)
     body = re.sub(r"\[.*?\]", " ", script_body)
     body = re.sub(r"[^\w\s'-]", " ", body)
     words = body.split()
 
     # Find capitalized proper nouns / names (e.g. "Prince", "Mrs Henderson")
     for i, w in enumerate(words):
-        if w[0].isupper() and w.lower() not in STOP_WORDS and len(w) > 2:
-            if i > 0 and words[i-1][0].isupper():
+        if w and w[0].isupper() and w.lower() not in STOP_WORDS and len(w) > 2:
+            if i > 0 and words[i - 1] and words[i - 1][0].isupper():
                 keywords.append(f"{words[i-1]} {w}")
             else:
                 keywords.append(w)
@@ -531,9 +545,11 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
     concrete_indicators = {
         "cold", "dark", "bright", "loud", "quiet", "fast", "slow", "big",
         "empty", "full", "broken", "calm", "dramatic", "live", "national",
+        "surprised", "confused", "happy", "sad", "angry", "tired", "excited",
+        "scared", "nervous", "relaxed", "busy", "modern", "old", "young",
     }
     for i in range(len(words) - 1):
-        w1, w2 = words[i].lower(), words[i+1].lower()
+        w1, w2 = words[i].lower(), words[i + 1].lower()
         if w1 in concrete_indicators and w2 not in STOP_WORDS and len(w2) > 2:
             keywords.append(f"{words[i]} {words[i+1]}")
 
@@ -546,9 +562,12 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
         "hand", "hands", "eyes", "brain", "heart", "moth", "earthquake",
         "television", "microphone", "guitar", "piano", "playlist", "flute",
         "sketch", "newspaper", "anchor", "teacher", "student", "police",
+        "dog", "cat", "pet", "game", "controller", "computer", "laptop",
+        "office", "kitchen", "food", "coffee", "book", "baby", "child",
+        "doctor", "hospital", "garden", "park", "beach", "snow", "cloud",
     }
     for w in words:
-        if w.lower() in visual_nouns:
+        if w and w.lower() in visual_nouns:
             keywords.append(w.lower())
 
     # Add tag-derived terms (cleaned hashtags)
@@ -566,8 +585,14 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
             seen.add(k_lower)
             unique.append(k)
 
-    return unique[:15]
+    return unique[:20]
 
+
+# Topic modifiers for video/image search (when script inspired by gaming/roblox trends)
+TOPIC_VISUAL_MODIFIERS = {
+    "gaming": ["gaming", "gameplay", "esports", "gamer reaction"],
+    "roblox": ["roblox", "kids gaming", "cartoon game", "playful game"],
+}
 
 CATEGORY_VISUAL_FALLBACKS = {
     "motivational": ["sunrise inspiration", "person walking forward", "mountain peak", "ocean waves calm"],
@@ -584,13 +609,18 @@ CATEGORY_VISUAL_FALLBACKS = {
 
 
 def _expand_visual_queries(visual_cues: list[str], title: str, category: str,
-                           script_keywords: list[str] | None = None) -> list[str]:
-    """Build a broad set of search queries from script keywords, cues, title, and category fallbacks.
-    Priority order: script-derived keywords > simplified cues > title > category fallbacks.
+                           script_keywords: list[str] | None = None,
+                           trend_topic: str | None = None) -> list[str]:
+    """Build a broad set of search queries from script keywords, cues, title, topic, and category fallbacks.
+    Priority order: topic modifiers > script-derived keywords > simplified cues > title > category fallbacks.
     """
     queries = []
 
-    # Script-derived keywords are highest priority (most relevant to actual content)
+    # Topic modifiers (when script inspired by gaming/roblox trends)
+    if trend_topic and trend_topic in TOPIC_VISUAL_MODIFIERS:
+        queries.extend(TOPIC_VISUAL_MODIFIERS[trend_topic])
+
+    # Script-derived keywords (bracket cues, extracted nouns, etc.)
     if script_keywords:
         queries.extend(script_keywords)
 
@@ -647,6 +677,12 @@ def source_assets_for_script(script: dict) -> bool:
     script_keywords = _extract_script_keywords(script_body, title, script_tags)
     logger.info("Script #%d: extracted %d keywords: %s", script_id, len(script_keywords), script_keywords[:8])
 
+    # Step 1b: Get dominant trend topic for topic-augmented queries (gaming, roblox, etc.)
+    trend_source_ids = script.get("trend_source_ids")
+    trend_topic = get_dominant_trend_topic(conn, trend_source_ids)
+    if trend_topic:
+        logger.info("Script #%d: trend topic '%s' — augmenting video/image queries", script_id, trend_topic)
+
     visual_cues = script.get("visual_cues", "[]")
     if isinstance(visual_cues, str):
         try:
@@ -657,8 +693,12 @@ def source_assets_for_script(script: dict) -> bool:
     if not visual_cues:
         visual_cues = ["aesthetic background", "cinematic footage"]
 
-    # Step 2: Build search queries — script keywords first, then cues, then fallbacks
-    search_queries = _expand_visual_queries(visual_cues, title, category, script_keywords=script_keywords)
+    # Step 2: Build search queries — topic > script keywords > cues > fallbacks
+    search_queries = _expand_visual_queries(
+        visual_cues, title, category,
+        script_keywords=script_keywords,
+        trend_topic=trend_topic,
+    )
 
     videos_per_script = cfg("sourcing.pexels_videos_per_script") or 5
     assets_saved = 0
@@ -820,9 +860,9 @@ def source_assets_for_script(script: dict) -> bool:
                     if images_saved >= 3:
                         break
 
-    # Step 4: Source background music
+    # Step 4: Source background music (with topic augmentation when applicable)
     from agents.music_scraper import source_music_for_script
-    source_music_for_script(script_id, category, tags=script_tags)
+    source_music_for_script(script_id, category, tags=script_tags, trend_topic=trend_topic)
 
     # Step 5: Generate voiceover with word-boundary metadata for caption sync.
     full_text = script_body.strip()

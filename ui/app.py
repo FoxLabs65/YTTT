@@ -75,8 +75,13 @@ with st.sidebar:
 
     @st.fragment(run_every=2)
     def _sidebar_status():
-        from ui.components import running_indicator
-        running_indicator()
+        from ui.components import running_indicator, log_viewer
+        from ui.runner import get_runner
+        if running_indicator():
+            r = get_runner()
+            with st.expander("Live Log", expanded=True):
+                st.caption(f"Running... {r.elapsed} — auto-refreshing every 2s")
+                log_viewer(r.get_log_tail(30))
 
     _sidebar_status()
 

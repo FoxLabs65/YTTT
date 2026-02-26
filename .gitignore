@@ -8,6 +8,7 @@ config/settings.yaml.bak
 **/settings.yaml.bak
 config/client_secret.json
 config/token.json
+config/tiktok_token.json
 
 # Database
 data/

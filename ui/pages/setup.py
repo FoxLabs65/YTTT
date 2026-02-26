@@ -211,6 +211,25 @@ def render():
             val = st.text_input("Client Secret", value=tiktok.get("client_secret", ""), type="password", key="cfg_tt_secret")
             tiktok["client_secret"] = val
 
+        redirect_uri = tiktok.get("redirect_uri", "http://localhost:8765/callback")
+        with st.expander("Advanced (redirect URI)", expanded=False):
+            val = st.text_input("Redirect URI", value=redirect_uri, key="cfg_tt_redirect", help="Must match exactly what you registered in TikTok Developer Portal")
+            tiktok["redirect_uri"] = val
+
+        # OAuth: Content Posting API requires user access token, not client_key
+        from agents.tiktok_auth import has_tiktok_token, run_oauth_flow
+        if has_tiktok_token():
+            st.success("TikTok OAuth: connected")
+        else:
+            st.info("Content Posting API requires OAuth. Add redirect_uri `http://localhost:8765/callback` in TikTok Developer Portal, then click Connect.")
+            if st.button("Connect TikTok", key="cfg_tt_oauth"):
+                with st.spinner("Opening browser... Complete authorization there, then return here. (Times out after 90s if you close the tab.)"):
+                    if run_oauth_flow():
+                        st.success("TikTok connected! You can enable uploads above.")
+                        st.rerun()
+                    else:
+                        st.error("OAuth failed or timed out. Check Client Key/Secret and redirect_uri in Developer Portal. Try again if you closed the browser.")
+
     # ── Voiceover ───────────────────────────────────────────────
     with st.expander("Voiceover"):
         sourcing = cfg.get("sourcing", {})

@@ -15,7 +15,7 @@ import streamlit as st
 from models.database import (
     get_connection, get_rejected_videos, get_uploaded_videos, get_stats,
 )
-from ui.components import section_header, metric_card, log_viewer, confirm_action, live_log_viewer
+from ui.components import section_header, metric_card, log_viewer, confirm_action, static_log_viewer
 from ui.runner import get_runner
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -115,7 +115,7 @@ def render():
     if runner.is_running:
         st.info(f"Task running: {runner.task_name} ({runner.elapsed})")
         with st.expander("Live Log", expanded=True):
-            live_log_viewer(task_name="cleanup", lines=40)
+            static_log_viewer(task_name="cleanup", lines=40)
     else:
         if confirm_action("Run Cleanup", "cleanup_action"):
             runner.start("cleanup")

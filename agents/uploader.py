@@ -167,12 +167,18 @@ def upload_to_tiktok(upload_record: dict) -> bool:
         conn.close()
         return False
 
-    client_key = cfg("tiktok.client_key")
-    client_secret = cfg("tiktok.client_secret")
-    if not client_key or client_key.startswith("YOUR_"):
-        logger.warning("TikTok credentials not configured")
+    from agents.tiktok_auth import get_tiktok_access_token
+
+    access_token = get_tiktok_access_token()
+    if not access_token:
+        logger.warning("TikTok OAuth token not configured. Run OAuth flow (Setup > TikTok > Connect)")
         conn = get_connection()
-        update_upload(conn, upload_record["id"], upload_status="failed", error_message="TikTok not configured")
+        update_upload(
+            conn,
+            upload_record["id"],
+            upload_status="failed",
+            error_message="TikTok OAuth required. Go to Setup > TikTok and click Connect.",
+        )
         conn.close()
         return False
 
@@ -195,11 +201,10 @@ def upload_to_tiktok(upload_record: dict) -> bool:
     conn = get_connection()
     update_upload(conn, upload_record["id"], upload_status="uploading")
 
-    try:
-        # Step 1: Init upload
+    def _do_init(token: str):
         init_url = "https://open.tiktokapis.com/v2/post/publish/video/init/"
-        headers = {
-            "Authorization": f"Bearer {client_key}",
+        hdrs = {
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
         init_body = {
@@ -217,8 +222,16 @@ def upload_to_tiktok(upload_record: dict) -> bool:
                 "total_chunk_count": 1,
             },
         }
+        return requests.post(init_url, json=init_body, headers=hdrs, timeout=30)
 
-        resp = requests.post(init_url, json=init_body, headers=headers, timeout=30)
+    try:
+        # Step 1: Init upload (retry once with refreshed token on 401)
+        resp = _do_init(access_token)
+        if resp.status_code == 401:
+            from agents.tiktok_auth import refresh_and_get_token
+            fresh = refresh_and_get_token()
+            if fresh:
+                resp = _do_init(fresh)
         resp.raise_for_status()
         init_data = resp.json().get("data", {})
         upload_url = init_data.get("upload_url")

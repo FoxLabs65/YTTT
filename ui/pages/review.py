@@ -279,7 +279,6 @@ def render():
                             extra.extend(["--voice", voice_val])
                         if new_music_path:
                             extra.extend(["--music-path", new_music_path])
-                        from ui.runner import get_runner
                         runner = get_runner()
                         runner.start("regenerate", extra)
                         st.toast("Regenerating video with new voice/music...")

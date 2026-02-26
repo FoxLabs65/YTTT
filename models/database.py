@@ -1,6 +1,7 @@
-import sqlite3
 import json
 import os
+import sqlite3
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -199,6 +200,21 @@ def get_top_trends(
     return [dict(r) for r in rows]
 
 
+def get_trends_by_ids(conn: sqlite3.Connection, trend_ids: list[int]) -> list[dict]:
+    """Fetch trends by ID list. Returns [] if ids empty or not found."""
+    if not trend_ids:
+        return []
+    ids = [i for i in trend_ids if isinstance(i, int)]
+    if not ids:
+        return []
+    placeholders = ",".join("?" * len(ids))
+    rows = conn.execute(
+        f"SELECT * FROM trends WHERE id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_rejected_trend_ids(conn: sqlite3.Connection) -> set[int]:
     """Return trend IDs that led to rejected content (excluded from ideation)."""
     rows = conn.execute("SELECT trend_id FROM rejected_trend_ids").fetchall()
@@ -226,6 +242,37 @@ def record_rejected_trend_sources(conn: sqlite3.Connection, script_id: int, reas
                 (tid, now, reason or ""),
             )
     conn.commit()
+
+
+# Topics that can influence asset selection (music, videos, images)
+ASSET_TOPICS = frozenset({"gaming", "roblox"})
+
+
+def get_dominant_trend_topic(conn: sqlite3.Connection, trend_source_ids: list[int] | str | None) -> str | None:
+    """Return the dominant trend category for asset selection, or None if not a known topic.
+    Used to augment music/video/image queries with topic-specific terms (e.g. gaming, roblox).
+    """
+    if not trend_source_ids:
+        return None
+    if isinstance(trend_source_ids, str):
+        try:
+            trend_source_ids = json.loads(trend_source_ids)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(trend_source_ids, list):
+        return None
+    ids = [i for i in trend_source_ids if isinstance(i, int)]
+    if not ids:
+        return None
+    trends = get_trends_by_ids(conn, ids)
+    if not trends:
+        return None
+    categories = [t.get("category") or "other" for t in trends]
+    counts = Counter(categories)
+    for cat, _ in counts.most_common():
+        if cat in ASSET_TOPICS:
+            return cat
+    return None
 
 
 def get_trend_categories(conn: sqlite3.Connection, hours: int = 168) -> list[str]:
@@ -481,6 +528,21 @@ def delete_rejected_video_record(conn: sqlite3.Connection, video_id: int):
     conn.execute("DELETE FROM uploads WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
     conn.commit()
+
+
+def delete_script(conn: sqlite3.Connection, script_id: int) -> bool:
+    """Delete a script and all related assets, videos, uploads. Removes DB records only; orphan files cleaned by --cleanup."""
+    row = conn.execute("SELECT id FROM scripts WHERE id = ?", (script_id,)).fetchone()
+    if not row:
+        return False
+    video_ids = [r[0] for r in conn.execute("SELECT id FROM videos WHERE script_id = ?", (script_id,)).fetchall()]
+    for vid in video_ids:
+        conn.execute("DELETE FROM uploads WHERE video_id = ?", (vid,))
+    conn.execute("DELETE FROM videos WHERE script_id = ?", (script_id,))
+    conn.execute("DELETE FROM assets WHERE script_id = ?", (script_id,))
+    conn.execute("DELETE FROM scripts WHERE id = ?", (script_id,))
+    conn.commit()
+    return True
 
 
 # --- Stats ---

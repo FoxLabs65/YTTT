@@ -7,5 +7,5 @@ Semantic versioning: MAJOR.MINOR.PATCH
 - PATCH: Bug fixes only
 """
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 VERSION = __version__

@@ -2,6 +2,32 @@
 
 All notable changes to the Shorts Engine are documented here.
 
+## [1.6.0] - 2026-02-26
+
+### Added
+- **TikTok OAuth:** Content Posting API now uses user OAuth access token (fixes 401 Unauthorized)
+  - Setup "Connect TikTok" button and `python main.py --tiktok-oauth` for authorization flow
+  - Token storage in `config/tiktok_token.json` with auto-refresh when expired
+  - Retry on 401 with refreshed token during upload
+- **Script browser:** Edit and delete scripts for any status
+  - Edit title, hook, body, CTA, tags on all scripts
+  - "Regenerate video" re-sources assets and re-composes with new audio/images
+  - Delete with confirmation (removes script, assets, videos, uploads)
+- **Platform selector:** Choose YouTube, TikTok, or both for scraping and generation
+  - Content Studio Generate: "Scrape from" dropdown
+  - Discovery Scrape Now: platform selector
+  - CLI: `--platform youtube|tiktok|both` for `--run` and `--discovery-only`
+
+### Fixed
+- **Pipeline navigation:** Fragment orphan error when switching pages — live log moved to sidebar only; pages use static log viewer
+- **Connect TikTok:** 90-second timeout when browser tab closed without completing OAuth; spinner no longer hangs indefinitely
+
+### Changed
+- TikTok uploader uses `get_tiktok_access_token()` instead of client_key for API calls
+- Discovery `run_discovery(platforms=...)` supports youtube, tiktok, or both
+
+---
+
 ## [1.5.0] - 2026-02-26
 
 ### Added

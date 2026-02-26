@@ -17,9 +17,9 @@ import streamlit as st
 from models.config import load_config
 from models.database import (
     get_connection, get_scripts_by_status, get_top_trends, get_top_tags,
-    update_script_status,
+    delete_script,
 )
-from ui.components import section_header, status_badge, live_log_viewer
+from ui.components import section_header, status_badge, static_log_viewer
 from ui.runner import get_runner
 
 
@@ -39,23 +39,27 @@ def render():
     # ── Generate Scripts ────────────────────────────────────────
     section_header("Generate Scripts")
 
-    col_gen1, col_gen2, col_gen3, col_gen4 = st.columns([2, 1, 1, 1])
+    col_gen1, col_gen2, col_gen3, col_gen4, col_gen5 = st.columns([2, 1, 1, 1, 1])
 
     categories = cfg.get("ideation", {}).get("categories", ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"])
 
     with col_gen1:
         category = st.selectbox("Category", ["auto (from trends)"] + categories, key="cs_category")
     with col_gen2:
-        count = st.slider("Scripts to generate", 1, 10, int(cfg.get("ideation", {}).get("scripts_per_batch", 5)), key="cs_count")
+        platform = st.selectbox("Scrape from", ["both", "youtube", "tiktok"], key="cs_platform", help="Which platforms to scrape for trends")
     with col_gen3:
+        count = st.slider("Scripts to generate", 1, 10, int(cfg.get("ideation", {}).get("scripts_per_batch", 5)), key="cs_count")
+    with col_gen4:
         if st.button("Generate", type="primary", disabled=runner.is_running, width="stretch"):
             extra = ["--count", str(count)]
             if category != "auto (from trends)":
                 extra.extend(["--category", category])
+            if platform != "both":
+                extra.extend(["--platform", platform])
             runner.start("full_pipeline", extra)
             st.toast("Pipeline started for script generation!")
             st.rerun()
-    with col_gen4:
+    with col_gen5:
         if runner.is_running and runner.task_name == "full_pipeline":
             if "_cs_stop_confirm" in st.session_state:
                 c1, c2 = st.columns(2)
@@ -74,8 +78,8 @@ def render():
                 st.rerun()
 
     if runner.is_running and runner.task_name == "full_pipeline":
-        with st.expander("Live Log", expanded=True):
-            live_log_viewer(task_name="full_pipeline", lines=40)
+        with st.expander("Log (live in sidebar)", expanded=True):
+            static_log_viewer(task_name="full_pipeline", lines=40)
 
     st.divider()
 
@@ -155,13 +159,11 @@ def render():
                 unsafe_allow_html=True,
             )
 
-            # Editable fields (only for pre-composition statuses)
-            editable = script.get("status") in ("pending_assets", "assets_ready")
-
-            new_title = st.text_input("Title", value=script.get("title", ""), key=f"{key_prefix}_title", disabled=not editable)
-            new_hook = st.text_input("Hook", value=script.get("hook", ""), key=f"{key_prefix}_hook", disabled=not editable)
-            new_body = st.text_area("Script Body", value=script.get("script_body", ""), height=150, key=f"{key_prefix}_body", disabled=not editable)
-            new_cta = st.text_input("CTA", value=script.get("cta", ""), key=f"{key_prefix}_cta", disabled=not editable)
+            # Editable fields (all scripts can be edited)
+            new_title = st.text_input("Title", value=script.get("title", ""), key=f"{key_prefix}_title")
+            new_hook = st.text_input("Hook", value=script.get("hook", ""), key=f"{key_prefix}_hook")
+            new_body = st.text_area("Script Body", value=script.get("script_body", ""), height=150, key=f"{key_prefix}_body")
+            new_cta = st.text_input("CTA", value=script.get("cta", ""), key=f"{key_prefix}_cta")
 
             tags_raw = script.get("suggested_tags", "[]")
             try:
@@ -172,7 +174,6 @@ def render():
                 "Tags (comma-separated)",
                 value=", ".join(tags_list),
                 key=f"{key_prefix}_tags",
-                disabled=not editable,
             )
 
             # Visual cues
@@ -184,35 +185,61 @@ def render():
             if cues:
                 st.caption(f"Visual cues: {', '.join(str(c) for c in cues[:8])}")
 
-            # Action buttons
-            if editable:
-                col_save, col_regen = st.columns(2)
-                with col_save:
-                    if st.button("Save Changes", key=f"{key_prefix}_save"):
-                        tag_list = [t.strip() for t in new_tags.split(",") if t.strip()]
-                        conn.execute(
-                            """UPDATE scripts SET title=?, hook=?, script_body=?, cta=?,
-                               suggested_tags=?, updated_at=? WHERE id=?""",
-                            (new_title, new_hook, new_body, new_cta, json.dumps(tag_list),
-                             datetime.utcnow().isoformat(), sid),
-                        )
-                        conn.commit()
-                        st.toast(f"Script #{sid} updated!")
-                        st.rerun()
-                with col_regen:
-                    if st.button("Re-generate", key=f"{key_prefix}_regen", disabled=runner.is_running):
-                        update_script_status(conn, sid, "pending_assets")
-                        runner.start("full_pipeline", ["--count", "1", "--category", script.get("category", "motivational")])
-                        st.toast("Regenerating...")
+            # Action buttons: Save, Regenerate video, Delete
+            col_save, col_regen, col_del = st.columns(3)
+            with col_save:
+                if st.button("Save Changes", key=f"{key_prefix}_save"):
+                    tag_list = [t.strip() for t in new_tags.split(",") if t.strip()]
+                    conn.execute(
+                        """UPDATE scripts SET title=?, hook=?, script_body=?, cta=?,
+                           suggested_tags=?, updated_at=? WHERE id=?""",
+                        (new_title, new_hook, new_body, new_cta, json.dumps(tag_list),
+                         datetime.utcnow().isoformat(), sid),
+                    )
+                    conn.commit()
+                    st.toast(f"Script #{sid} updated!")
+                    st.rerun()
+            with col_regen:
+                if st.button("Regenerate video", key=f"{key_prefix}_regen", disabled=runner.is_running,
+                             help="Re-source assets and re-compose video with new audio and images"):
+                    tag_list = [t.strip() for t in new_tags.split(",") if t.strip()]
+                    conn.execute(
+                        """UPDATE scripts SET title=?, hook=?, script_body=?, cta=?,
+                           suggested_tags=?, updated_at=? WHERE id=?""",
+                        (new_title, new_hook, new_body, new_cta, json.dumps(tag_list),
+                         datetime.utcnow().isoformat(), sid),
+                    )
+                    conn.commit()
+                    runner.start("regenerate", ["--script-id", str(sid)])
+                    st.toast("Regenerating video with new assets...")
+                    st.rerun()
+            with col_del:
+                if f"_cs_del_confirm_{sid}" in st.session_state:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("Yes, delete", key=f"{key_prefix}_del_yes", type="primary"):
+                            if delete_script(conn, sid):
+                                st.session_state.pop(f"_cs_del_confirm_{sid}", None)
+                                st.toast(f"Script #{sid} deleted.")
+                                st.rerun()
+                            else:
+                                st.error("Failed to delete")
+                    with c2:
+                        if st.button("Cancel", key=f"{key_prefix}_del_no"):
+                            st.session_state.pop(f"_cs_del_confirm_{sid}", None)
+                            st.rerun()
+                else:
+                    if st.button("Delete", key=f"{key_prefix}_del", type="secondary"):
+                        st.session_state[f"_cs_del_confirm_{sid}"] = True
                         st.rerun()
 
     conn.close()
 
-    # Auto-refresh every 2s when pipeline is running (must be last so page renders first)
+    # Auto-refresh every 2s when pipeline or regenerate is running (must be last so page renders first)
     @st.fragment(run_every=2)
     def _content_refresh():
         r = get_runner()
-        if r.is_running and r.task_name == "full_pipeline":
+        if r.is_running and r.task_name in ("full_pipeline", "regenerate"):
             st.rerun()
 
     _content_refresh()
