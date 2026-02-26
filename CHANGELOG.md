@@ -2,6 +2,34 @@
 
 All notable changes to the Shorts Engine are documented here.
 
+## [1.5.0] - 2026-02-26
+
+### Added
+- **howto script category:** Educational/how-to content ("3 quick tips", "did you know", "you're doing it wrong")
+  - Template: `config/templates/scripts/howto.txt`
+  - Music: chill, instructional
+  - Discovery keywords: howto, tutorial, tips, life hack, guide, learn
+- **pov script category:** POV-style immersive narratives ("POV: you just...", "The moment you realize...")
+  - Template: `config/templates/scripts/pov.txt`
+  - Music: quirky, relatable
+  - Discovery keywords: pov, relatable, the moment you, when you
+
+---
+
+## [1.4.0] - 2026-02-26
+
+### Added
+- **Gaming & Roblox categories:** Full pipeline support for gaming and roblox content
+  - Discovery: `_CATEGORY_KEYWORDS` for trend classification (gaming, roblox)
+  - Music: `CATEGORY_MUSIC_MAP` entries with gaming/roblox-appropriate tracks
+  - Config: `music_moods` and `voiceover_voices` for gaming and roblox
+- **Category checklist:** Startup validation ensures ideation categories are configured across discovery, music, and config
+  - `python main.py --setup` runs category consistency check
+  - Setup page: "Category Checklist" expander with validation results
+  - Sidebar: Warning when category config issues detected at app startup
+
+---
+
 ## [1.3.0] - 2026-02-26
 
 ### Added

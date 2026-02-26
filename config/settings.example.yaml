@@ -64,6 +64,8 @@ ideation:
     - meme
     - news
     - storytime
+    - howto
+    - pov
 
 # --- Asset Sourcing ---
 sourcing:
@@ -85,6 +87,10 @@ sourcing:
     meme: "quirky"
     news: "dramatic"
     storytime: "chill"
+    gaming: "quirky"
+    roblox: "funny"
+    howto: "chill"
+    pov: "quirky"
   # Per-category voice (string) or list for random variety within category
   voiceover_voices:
     motivational: "en-US-AndrewMultilingualNeural"
@@ -92,6 +98,10 @@ sourcing:
     meme: "en-US-BrianMultilingualNeural"
     news: "en-US-AndrewMultilingualNeural"
     storytime: "en-US-AvaMultilingualNeural"
+    gaming: "en-US-BrianMultilingualNeural"
+    roblox: "en-US-BrianMultilingualNeural"
+    howto: "en-US-AndrewMultilingualNeural"
+    pov: "en-US-BrianMultilingualNeural"
   # Optional: pool of voices to rotate through for ALL scripts (overrides per-category)
   # When set, each script gets a random voice from this list for variety
   voiceover_voice_pool: []  # e.g. ["en-US-AndrewMultilingualNeural", "en-US-AvaMultilingualNeural", "en-US-BrianMultilingualNeural", "en-GB-SoniaNeural"]

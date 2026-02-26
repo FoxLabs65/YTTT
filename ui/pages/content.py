@@ -41,7 +41,7 @@ def render():
 
     col_gen1, col_gen2, col_gen3, col_gen4 = st.columns([2, 1, 1, 1])
 
-    categories = cfg.get("ideation", {}).get("categories", ["motivational", "funny", "meme", "news", "storytime"])
+    categories = cfg.get("ideation", {}).get("categories", ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"])
 
     with col_gen1:
         category = st.selectbox("Category", ["auto (from trends)"] + categories, key="cs_category")

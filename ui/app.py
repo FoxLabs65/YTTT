@@ -22,6 +22,15 @@ from models.database import init_db
 
 init_db()
 
+# Run category consistency check at startup (cached for session)
+if "category_check_warnings" not in st.session_state:
+    try:
+        from config.validation import validate_category_config
+
+        st.session_state.category_check_warnings = validate_category_config()
+    except Exception:
+        st.session_state.category_check_warnings = []
+
 st.set_page_config(
     page_title="Shorts Engine",
     page_icon="🎬",
@@ -56,6 +65,13 @@ pg = st.navigation(pages)
 
 with st.sidebar:
     st.caption(f"Shorts Engine v{__version__}")
+
+    # Category checklist warning (shown at startup if issues found)
+    if st.session_state.get("category_check_warnings"):
+        with st.expander("⚠️ Category config", expanded=False):
+            for w in st.session_state["category_check_warnings"]:
+                st.caption(f"• {w}")
+            st.caption("Go to **Setup** to fix.")
 
     @st.fragment(run_every=2)
     def _sidebar_status():

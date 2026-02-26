@@ -146,6 +146,30 @@ def render():
         with st.expander("How to get API keys (step-by-step)"):
             _render_api_key_instructions()
 
+    # ── Category Checklist ───────────────────────────────────────
+    with st.expander("Category Checklist", expanded=False):
+        st.caption(
+            "Ensures each ideation category is configured across discovery, music, and voiceover. "
+            "Missing entries cause fallbacks (e.g. trends → 'other', music → storytime)."
+        )
+        try:
+            from config.validation import validate_category_config
+
+            cat_warnings = validate_category_config()
+            if cat_warnings:
+                for w in cat_warnings:
+                    st.warning(w)
+                st.info(
+                    "Add missing categories to: "
+                    "`agents/discovery.py` (_CATEGORY_KEYWORDS), "
+                    "`agents/music_scraper.py` (CATEGORY_MUSIC_MAP), "
+                    "and `config/settings.yaml` (music_moods, voiceover_voices)."
+                )
+            else:
+                st.success("All ideation categories are fully configured.")
+        except Exception as e:
+            st.caption(f"Check skipped: {e}")
+
     # ── YouTube OAuth ───────────────────────────────────────────
     with st.expander("YouTube OAuth"):
         secret_path = Path(cfg.get("youtube_client_secret", "config/client_secret.json"))
@@ -202,7 +226,7 @@ def render():
         available_voices = _get_voice_list()
         st.caption("Select a voice for each content category.")
 
-        for cat in ["motivational", "funny", "meme", "news", "storytime"]:
+        for cat in ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"]:
             current = voices_map.get(cat, "en-US-AndrewMultilingualNeural")
             idx = available_voices.index(current) if current in available_voices else 0
             val = st.selectbox(f"{cat.title()} voice", available_voices, index=idx, key=f"cfg_voice_{cat}")

@@ -80,6 +80,10 @@ _CATEGORY_KEYWORDS = {
     "meme": ("meme", "memes", "relatable", "pov", "viral"),
     "news": ("news", "breaking", "update", "reaction", "headline"),
     "storytime": ("storytime", "story", "storytelling", "anecdote", "happened"),
+    "howto": ("howto", "how to", "tutorial", "tips", "did you know", "life hack", "guide", "learn"),
+    "pov": ("pov", "point of view", "relatable", "the moment you", "when you"),
+    "roblox": ("roblox", "blox", "brookhaven", "adopt me", "bloxburg"),
+    "gaming": ("gaming", "game", "games", "gamer", "playthrough", "stream", "twitch", "esports", "fortnite", "minecraft"),
 }
 
 

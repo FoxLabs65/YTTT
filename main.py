@@ -92,6 +92,24 @@ def cmd_setup():
     except (FileNotFoundError, subprocess.TimeoutExpired):
         logger.warning("  yt-dlp: NOT FOUND - install via 'pip install yt-dlp'")
 
+    # Category consistency check
+    try:
+        from config.validation import validate_category_config
+
+        cat_warnings = validate_category_config()
+        if cat_warnings:
+            logger.warning("  Category checklist: %d issue(s) — see below", len(cat_warnings))
+            for w in cat_warnings:
+                logger.warning("    • %s", w)
+            logger.warning(
+                "  Add missing categories to discovery, music_scraper, and config. "
+                "See config/settings.example.yaml for music_moods and voiceover_voices."
+            )
+        else:
+            logger.info("  Category checklist: OK (all ideation categories configured)")
+    except Exception as e:
+        logger.debug("  Category checklist: skipped (%s)", e)
+
     logger.info("Setup complete. Configure any missing API keys in config/settings.yaml")
 
 
@@ -496,7 +514,7 @@ def main():
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
     parser.add_argument("--music-path", type=str, help="Music file path override for regenerate")
     parser.add_argument("--platform", type=str, choices=["youtube", "tiktok"], help="Upload to specific platform only (youtube or tiktok)")
-    parser.add_argument("--category", type=str, help="Content category for ideation (motivational/funny/meme/news/storytime)")
+    parser.add_argument("--category", type=str, help="Script category for ideation (motivational/funny/meme/news/storytime/howto/pov)")
     parser.add_argument("--count", type=int, help="Number of scripts to generate")
     parser.add_argument("--retries", type=int, help="Override max retries per phase (default: from config or 3)")
 

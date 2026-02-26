@@ -270,7 +270,7 @@ Shows counts of trends, scripts, videos pending review, approved, uploaded, and 
 python main.py --run --category motivational --count 3
 ```
 
-Valid categories: `motivational`, `funny`, `meme`, `news`, `storytime`.
+Valid categories: `motivational`, `funny`, `meme`, `news`, `storytime`, `howto`, `pov`.
 
 ---
 

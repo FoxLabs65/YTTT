@@ -99,6 +99,59 @@ CATEGORY_MUSIC_MAP = {
         "freesound_tags": ["ambient", "calm", "acoustic", "lo-fi", "gentle", "atmospheric"],
         "mood": "chill",
     },
+    "gaming": {
+        "queries": [
+            "no copyright gaming background music",
+            "royalty free epic gaming music",
+            "energetic electronic music no copyright",
+            "upbeat gaming montage music free",
+            "8-bit chiptune gaming music royalty free",
+            "intense gaming music no copyright",
+            "victory gaming music royalty free",
+            "playful game music no copyright",
+        ],
+        "freesound_tags": ["gaming", "electronic", "chiptune", "epic", "energetic", "8-bit"],
+        "mood": "quirky",
+    },
+    "roblox": {
+        "queries": [
+            "no copyright roblox style music",
+            "royalty free playful game music",
+            "upbeat cartoon music no copyright",
+            "fun kids game music royalty free",
+            "happy electronic music no copyright",
+            "playful ukulele game music free",
+            "bouncy fun music royalty free",
+        ],
+        "freesound_tags": ["playful", "fun", "happy", "game", "electronic", "bouncy"],
+        "mood": "funny",
+    },
+    "howto": {
+        "queries": [
+            "no copyright educational background music",
+            "royalty free tutorial music",
+            "calm instructional music no copyright",
+            "soft acoustic how-to music free",
+            "gentle informative music royalty free",
+            "clean minimalist background no copyright",
+            "professional explainer music free",
+        ],
+        "freesound_tags": ["calm", "educational", "soft", "acoustic", "minimal", "clean"],
+        "mood": "chill",
+    },
+    "pov": {
+        "queries": [
+            "no copyright pov style music",
+            "royalty free relatable background music",
+            "quirky relatable music no copyright",
+            "lo-fi beat background no copyright",
+            "viral style music royalty free",
+            "trendy electronic music no copyright",
+            "playful ukulele background free",
+        ],
+        "freesound_tags": ["quirky", "relatable", "lo-fi", "electronic", "playful", "trendy"],
+        "mood": "quirky",
+    },
 }
 
 MIN_DURATION = 20

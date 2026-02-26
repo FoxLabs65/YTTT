@@ -575,6 +575,8 @@ CATEGORY_VISUAL_FALLBACKS = {
     "meme": ["internet culture", "trending pop culture", "social media phone", "neon signs"],
     "news": ["city skyline", "newspaper headlines", "breaking news background", "world globe"],
     "storytime": ["cozy room aesthetic", "cinematic close up face", "dramatic lighting", "night city lights"],
+    "howto": ["hands demonstrating", "step by step tutorial", "notebook tips", "clean workspace"],
+    "pov": ["first person perspective", "relatable moment", "phone screen pov", "everyday life"],
     "wellness": ["meditation nature", "yoga sunrise", "peaceful garden", "calm water ripples"],
     "wellbeing": ["self care routine", "healthy lifestyle", "nature walk", "morning sunlight"],
     "viral": ["social media trending", "crowd reaction", "neon lights", "fast motion city"],

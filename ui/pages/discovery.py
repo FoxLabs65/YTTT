@@ -136,7 +136,7 @@ def render():
         "They do not affect scraping — YouTube queries and TikTok hashtags above define what gets scraped. "
         "Content categories define what mix of scripts to write from the discovered trends."
     )
-    preset_cats = ["motivational", "funny", "meme", "news", "storytime"]
+    preset_cats = ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"]
     ideation_cfg = cfg.get("ideation", {})
     current_cats = ideation_cfg.get("categories", preset_cats)
     if not isinstance(current_cats, list):

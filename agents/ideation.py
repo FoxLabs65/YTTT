@@ -162,7 +162,7 @@ def generate_scripts(
 ) -> list[dict]:
     """Generate video scripts using Claude Pro (with Gemini fallback)."""
     count = count or cfg("ideation.scripts_per_batch") or 5
-    categories = cfg("ideation.categories") or ["motivational", "funny", "meme", "news", "storytime"]
+    categories = cfg("ideation.categories") or ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"]
 
     if not category:
         category = random.choice(categories)
