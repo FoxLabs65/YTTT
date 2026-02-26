@@ -476,7 +476,9 @@ def _send_notification(message: str):
 
 
 def main():
+    from version import __version__
     parser = argparse.ArgumentParser(description="Trending Content Shorts Engine")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--setup", action="store_true", help="Initialize database and verify config")
     group.add_argument("--run", action="store_true", help="Run full pipeline")
@@ -487,6 +489,8 @@ def main():
     group.add_argument("--schedule", action="store_true", help="Start scheduler daemon")
     group.add_argument("--status", action="store_true", help="Show pipeline status")
     group.add_argument("--regenerate", action="store_true", help="Regenerate a single video with overrides")
+    group.add_argument("--reaction-discovery", action="store_true", help="Discover YouTube reaction clip candidates (human review required)")
+    group.add_argument("--reaction-extract", action="store_true", help="Extract clips for approved reaction candidates")
 
     parser.add_argument("--script-id", type=int, help="Script ID for regenerate")
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
@@ -524,6 +528,20 @@ def main():
             logger.error("--regenerate requires --script-id")
             sys.exit(1)
         cmd_regenerate(args.script_id, voice=args.voice, music_path=args.music_path)
+    elif args.reaction_discovery:
+        from agents.reaction_sourcing import discover_candidates
+        logger.info("--- Reaction Discovery (human review required) ---")
+        result = discover_candidates(max_videos=10)
+        logger.info("Discovered %d candidates. Review data/reaction/candidates.json and approve, then run --reaction-extract", len(result))
+    elif args.reaction_extract:
+        from agents.reaction_sourcing import run_extraction, get_approved
+        logger.info("--- Reaction Clip Extraction ---")
+        approved = get_approved()
+        if not approved:
+            logger.warning("No approved candidates. Run --reaction-discovery, review candidates, then approve in data/reaction/candidates.json")
+        else:
+            paths = run_extraction()
+            logger.info("Extracted %d clips to assets/reaction_clips/", len(paths))
 
 
 if __name__ == "__main__":

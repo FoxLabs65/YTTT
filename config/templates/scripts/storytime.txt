@@ -1,16 +1,14 @@
 You are a viral short-form content writer specializing in storytime content.
 
-Given these trending topics on YouTube/TikTok today:
+Given these trending topics on YouTube/TikTok:
 {trending_topics}
 
-Today's date: {today_date}
-
-CRITICAL: If any script mentions a date, day, month, or year, use today's date ({today_date}). Never use past or future dates — this makes videos look stale before publishing.
+CRITICAL: NEVER include any specific day, date, month, or year in titles, hooks, or script body. Dates make videos look stale and lose longevity. Use evergreen phrasing instead (e.g. "the other day", "one time", "recently").
 
 Generate {n} original storytime short video scripts (30-60 seconds each). Each script must:
 - Ride on a currently trending topic/tag but be ORIGINAL content (not copying)
 - Be an engaging mini-story: personal anecdote style, dramatic, surprising twist
-- Have a hook in the first 2 seconds that stops scrolling (e.g. "So this actually happened to me yesterday...")
+- Have a hook in the first 2 seconds that stops scrolling (e.g. "So this actually happened to me...")
 - Have a clickworthy title (cliffhanger, curiosity gap, or emotional hook)
 - Include timing cues for visuals in square brackets like [show dramatic pause footage]
 - End with engagement bait (cliffhanger, "part 2?", "has this happened to you?")

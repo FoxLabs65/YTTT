@@ -78,6 +78,22 @@ def render():
             _set(cfg, "anthropic_api_key", val)
 
             val = st.text_input(
+                "Coverr API Key",
+                value=cfg.get("coverr_api_key", ""),
+                type="password", key="cfg_coverr",
+                help="Optional. Free stock videos. See instructions below.",
+            )
+            _set(cfg, "coverr_api_key", val)
+
+            val = st.text_input(
+                "Unsplash Access Key",
+                value=cfg.get("unsplash_access_key", ""),
+                type="password", key="cfg_unsplash",
+                help="Optional. Free stock photos. See instructions below.",
+            )
+            _set(cfg, "unsplash_access_key", val)
+
+            val = st.text_input(
                 "Freesound API Key",
                 value=cfg.get("freesound_api_key", ""),
                 type="password", key="cfg_freesound",
@@ -100,24 +116,35 @@ def render():
             )
             _set(cfg, "gemini_api_key", val)
 
+        st.caption("**Openverse** — No API key required. Uses anonymous access for images and music.")
+
         # API connection tests
         st.markdown("**Test Connections**")
-        tcols = st.columns(5)
+        tcols = st.columns(7)
         with tcols[0]:
-            if st.button("Test Pexels", width="stretch"):
+            if st.button("Test Pexels", key="test_pexels"):
                 _test_pexels(cfg.get("pexels_api_key", ""))
         with tcols[1]:
-            if st.button("Test Pixabay", width="stretch"):
+            if st.button("Test Pixabay", key="test_pixabay"):
                 _test_pixabay(cfg.get("pixabay_api_key", ""))
         with tcols[2]:
-            if st.button("Test Anthropic", width="stretch"):
-                _test_anthropic(cfg.get("anthropic_api_key", ""))
+            if st.button("Test Coverr", key="test_coverr"):
+                _test_coverr(cfg.get("coverr_api_key", ""))
         with tcols[3]:
-            if st.button("Test Gemini", width="stretch"):
-                _test_gemini(cfg.get("gemini_api_key", ""))
+            if st.button("Test Unsplash", key="test_unsplash"):
+                _test_unsplash(cfg.get("unsplash_access_key", ""))
         with tcols[4]:
-            if st.button("Test Freesound", width="stretch"):
+            if st.button("Test Anthropic", key="test_anthropic"):
+                _test_anthropic(cfg.get("anthropic_api_key", ""))
+        with tcols[5]:
+            if st.button("Test Gemini", key="test_gemini"):
+                _test_gemini(cfg.get("gemini_api_key", ""))
+        with tcols[6]:
+            if st.button("Test Freesound", key="test_freesound"):
                 _test_freesound(cfg.get("freesound_api_key", ""))
+
+        with st.expander("How to get API keys (step-by-step)"):
+            _render_api_key_instructions()
 
     # ── YouTube OAuth ───────────────────────────────────────────
     with st.expander("YouTube OAuth"):
@@ -180,6 +207,40 @@ def render():
             idx = available_voices.index(current) if current in available_voices else 0
             val = st.selectbox(f"{cat.title()} voice", available_voices, index=idx, key=f"cfg_voice_{cat}")
             voices_map[cat] = val
+
+        st.markdown("**Voice variety**")
+        pool = sourcing.get("voiceover_voice_pool") or []
+        if not isinstance(pool, list):
+            pool = []
+        pool_default = [v for v in pool if v in available_voices]
+        pool_selected = st.multiselect(
+            "Voice pool (rotate randomly across scripts)",
+            options=available_voices,
+            default=pool_default,
+            key="cfg_voice_pool",
+            help="When set, each script gets a random voice from this list instead of per-category. Leave empty to use per-category voices above.",
+        )
+        sourcing["voiceover_voice_pool"] = pool_selected if pool_selected else []
+
+        with st.expander("Natural voices & alternatives"):
+            st.markdown("""
+**Edge-TTS (built-in)** — Free Microsoft neural voices. Recommended natural-sounding options:
+- `en-US-AvaMultilingualNeural` — warm, conversational
+- `en-US-AndrewMultilingualNeural` — clear, neutral
+- `en-US-EmmaMultilingualNeural` — expressive
+- `en-US-BrianMultilingualNeural` — friendly, casual
+- `en-GB-SoniaNeural` — British, polished
+- `en-GB-RyanNeural` — British, authoritative
+
+Use **Voice pool** above to rotate through multiple voices for variety within a pipeline run.
+
+**Alternative TTS providers** (not built-in) — For more natural/human-like voices, consider:
+- **ElevenLabs** — High-quality, many voices; paid API
+- **Play.ht** — Natural voices; paid
+- **Google Cloud TTS** — Neural2 voices; pay-per-use
+
+These would require custom integration. Edge-TTS is free and works out of the box.
+""")
 
         rate = sourcing.get("voiceover_rate", "-5%")
         val = st.slider(
@@ -388,3 +449,82 @@ def _test_freesound(key: str):
             st.error(f"Freesound: HTTP {r.status_code}")
     except Exception as e:
         st.error(f"Freesound: {e}")
+
+
+def _test_coverr(key: str):
+    if not key or key.startswith("YOUR_"):
+        st.error("No key configured")
+        return
+    try:
+        import requests
+        r = requests.get(
+            "https://api.coverr.co/videos",
+            params={"query": "test", "page_size": 1, "api_key": key},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            st.success("Coverr: connected")
+        else:
+            st.error(f"Coverr: HTTP {r.status_code}")
+    except Exception as e:
+        st.error(f"Coverr: {e}")
+
+
+def _test_unsplash(key: str):
+    if not key or key.startswith("YOUR_"):
+        st.error("No key configured")
+        return
+    try:
+        import requests
+        r = requests.get(
+            "https://api.unsplash.com/search/photos",
+            headers={"Authorization": f"Client-ID {key}"},
+            params={"query": "test", "per_page": 1},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            st.success("Unsplash: connected")
+        else:
+            st.error(f"Unsplash: HTTP {r.status_code}")
+    except Exception as e:
+        st.error(f"Unsplash: {e}")
+
+
+def _render_api_key_instructions():
+    """Render step-by-step instructions for obtaining API keys for new providers."""
+    st.markdown("""
+### Coverr (stock videos)
+
+1. Go to [Coverr API docs](https://api.coverr.co/docs/start/).
+2. Contact **developers@coverr.co** by email.
+3. Describe your use case (e.g. "short-form video content creation for social media").
+4. Wait for a reply (typically within a week). They will send you an API key.
+5. Paste the key into the **Coverr API Key** field above and click **Save Configuration**.
+
+**Limits:** Free tier allows up to 1,000 requests/month for personal/staging use. Contact them for production limits.
+
+---
+
+### Unsplash (stock photos)
+
+1. Go to [Unsplash Developers](https://unsplash.com/developers).
+2. Sign in or create a free Unsplash account.
+3. Click **Your apps** → **New Application**.
+4. Accept the API use and guidelines.
+5. Fill in the form:
+   - **Application name:** e.g. "My Shorts Engine"
+   - **Description:** Brief description of your project
+6. After creating the app, you'll see your **Access Key** and **Secret Key**.
+7. Copy the **Access Key** (not the Secret) into the **Unsplash Access Key** field above.
+8. Click **Save Configuration**.
+
+**Note:** Unsplash requires attribution. The app handles this when using images.
+
+---
+
+### Openverse (images + music)
+
+**No API key required.** Openverse allows anonymous access for images and music. The app uses it automatically when enabled in provider settings.
+
+For higher rate limits, you can optionally register at [api.openverse.org](https://api.openverse.org) and use OAuth, but it's not needed for typical use.
+""")

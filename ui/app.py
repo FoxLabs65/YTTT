@@ -11,6 +11,8 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from version import __version__
+
 # Configure logging for UI and backend traceability (errors -> logs/errors.log)
 from config.logging_config import configure_logging
 
@@ -30,7 +32,7 @@ st.set_page_config(
 from ui.style import inject_css
 inject_css()
 
-from ui.pages import dashboard, setup, discovery, content, review, uploads, cleanup, scheduler
+from ui.pages import dashboard, setup, discovery, content, review, uploads, cleanup, scheduler, reaction
 
 pages = {
     "Overview": [
@@ -41,6 +43,7 @@ pages = {
         st.Page(content.render, title="Content Studio", icon="✍️", url_path="content"),
         st.Page(review.render, title="Review", icon="🎬", url_path="review"),
         st.Page(uploads.render, title="Uploads", icon="📤", url_path="uploads"),
+        st.Page(reaction.render, title="Reaction Shorts", icon="🎯", url_path="reaction"),
     ],
     "Settings": [
         st.Page(setup.render, title="Setup", icon="⚙️", url_path="setup"),
@@ -52,7 +55,7 @@ pages = {
 pg = st.navigation(pages)
 
 with st.sidebar:
-    st.caption("Shorts Engine v1.0")
+    st.caption(f"Shorts Engine v{__version__}")
 
     @st.fragment(run_every=2)
     def _sidebar_status():

@@ -1,11 +1,9 @@
 You are a viral short-form content writer specializing in comedy and funny stories.
 
-Given these trending topics on YouTube/TikTok today:
+Given these trending topics on YouTube/TikTok:
 {trending_topics}
 
-Today's date: {today_date}
-
-CRITICAL: If any script mentions a date, day, month, or year, use today's date ({today_date}). Never use past or future dates — this makes videos look stale before publishing.
+CRITICAL: NEVER include any specific day, date, month, or year in titles, hooks, or script body. Dates make videos look stale and lose longevity. Use evergreen phrasing instead (e.g. "recently", "the other day", "one time").
 
 Generate {n} original funny short video scripts (15-45 seconds each). Each script must:
 - Ride on a currently trending topic/tag but be ORIGINAL content (not copying)

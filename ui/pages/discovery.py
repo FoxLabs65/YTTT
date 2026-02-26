@@ -42,15 +42,6 @@ def render():
     conn = get_connection()
     runner = get_runner()
 
-    # Auto-refresh every 2s when discovery is running (updates status, trends, tags)
-    @st.fragment(run_every=2)
-    def _discovery_refresh():
-        r = get_runner()
-        if r.is_running and r.task_name == "discovery":
-            st.rerun()
-
-    _discovery_refresh()
-
     # ── Search Criteria Manager ─────────────────────────────────
     section_header("Search Criteria")
 
@@ -221,6 +212,8 @@ def render():
     # ── Trend Browser ───────────────────────────────────────────
     section_header("Trend Browser")
 
+    lookback = cfg.get("discovery", {}).get("trend_lookback_hours", 48)
+
     # Category filter: use actual categories from trends (includes "other" for uncategorized)
     trend_cats = get_trend_categories(conn, hours=lookback)
     cat_options = ["All"] + sorted(set(trend_cats) | set(all_cats)) if trend_cats else ["All"] + all_cats
@@ -233,7 +226,6 @@ def render():
     with col_filter3:
         score_min = st.number_input("Min Trend Score", value=0.0, step=0.5, key="disc_score_min")
 
-    lookback = cfg.get("discovery", {}).get("trend_lookback_hours", 48)
     trends = get_top_trends(conn, limit=100, hours=lookback)
 
     if platform_filter != "All":
@@ -296,3 +288,12 @@ def render():
         st.info("No trending tags yet.")
 
     conn.close()
+
+    # Auto-refresh every 2s when discovery is running (must be last so page renders first)
+    @st.fragment(run_every=2)
+    def _discovery_refresh():
+        r = get_runner()
+        if r.is_running and r.task_name == "discovery":
+            st.rerun()
+
+    _discovery_refresh()

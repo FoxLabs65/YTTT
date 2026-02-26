@@ -18,6 +18,7 @@ from models.database import (
     get_connection, get_videos_by_status, update_video_status, insert_upload,
 )
 from agents.cleanup import cleanup_single_rejected_video
+from ui.runner import get_runner
 from agents.composer import generate_thumbnail
 from agents.sourcing import search_pexels_images, download_pexels_image
 from agents.music_scraper import scan_local_library
@@ -96,10 +97,11 @@ def render():
             bulk_reason = st.selectbox("Rejection reason", REJECTION_PRESETS, key="rev_bulk_reason")
         with col_b3:
             if st.button("Reject All"):
+                pipeline_running = get_runner().is_running
                 for v in videos:
                     update_video_status(conn, v["id"], "rejected", rejection_reason=bulk_reason)
-                    cleanup_single_rejected_video(v["id"])
-                st.toast(f"{len(videos)} videos rejected and cleaned up")
+                    cleanup_single_rejected_video(v["id"], defer_asset_cleanup=pipeline_running)
+                st.toast(f"{len(videos)} videos rejected and cleaned up" + (" (asset cleanup deferred)" if pipeline_running else ""))
                 st.rerun()
         st.divider()
 
@@ -223,8 +225,9 @@ def render():
                         final_reason = custom_reason if custom_reason else reason_idx
                         if st.button("Reject", key=f"{key}_reject", width="stretch"):
                             update_video_status(conn, vid, "rejected", rejection_reason=final_reason)
-                            cleanup_single_rejected_video(vid)
-                            st.toast(f"Video #{vid} rejected and cleaned up")
+                            pipeline_running = get_runner().is_running
+                            cleanup_single_rejected_video(vid, defer_asset_cleanup=pipeline_running)
+                            st.toast(f"Video #{vid} rejected and cleaned up" + (" (asset cleanup deferred)" if pipeline_running else ""))
                             st.rerun()
 
                 # Change music, voice, regenerate

@@ -19,7 +19,7 @@ from models.database import (
     get_connection, get_scripts_by_status, get_top_trends, get_top_tags,
     update_script_status,
 )
-from ui.components import section_header, status_badge, log_viewer
+from ui.components import section_header, status_badge, live_log_viewer
 from ui.runner import get_runner
 
 
@@ -39,7 +39,7 @@ def render():
     # ── Generate Scripts ────────────────────────────────────────
     section_header("Generate Scripts")
 
-    col_gen1, col_gen2, col_gen3 = st.columns([2, 1, 1])
+    col_gen1, col_gen2, col_gen3, col_gen4 = st.columns([2, 1, 1, 1])
 
     categories = cfg.get("ideation", {}).get("categories", ["motivational", "funny", "meme", "news", "storytime"])
 
@@ -48,8 +48,6 @@ def render():
     with col_gen2:
         count = st.slider("Scripts to generate", 1, 10, int(cfg.get("ideation", {}).get("scripts_per_batch", 5)), key="cs_count")
     with col_gen3:
-        st.write("")
-        st.write("")
         if st.button("Generate", type="primary", disabled=runner.is_running, width="stretch"):
             extra = ["--count", str(count)]
             if category != "auto (from trends)":
@@ -57,12 +55,27 @@ def render():
             runner.start("full_pipeline", extra)
             st.toast("Pipeline started for script generation!")
             st.rerun()
+    with col_gen4:
+        if runner.is_running and runner.task_name == "full_pipeline":
+            if "_cs_stop_confirm" in st.session_state:
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Confirm Stop", type="primary", key="cs_stop_yes"):
+                        runner.stop()
+                        st.session_state.pop("_cs_stop_confirm", None)
+                        st.toast("Pipeline stopped.")
+                        st.rerun()
+                with c2:
+                    if st.button("Cancel", key="cs_stop_cancel"):
+                        st.session_state.pop("_cs_stop_confirm", None)
+                        st.rerun()
+            elif st.button("Stop", type="secondary", width="stretch", help="Stop the running pipeline"):
+                st.session_state["_cs_stop_confirm"] = True
+                st.rerun()
 
-    if runner.is_running:
+    if runner.is_running and runner.task_name == "full_pipeline":
         with st.expander("Live Log", expanded=True):
-            log_viewer(runner.get_log_tail(20))
-        if st.button("Refresh Log", key="cs_refresh"):
-            st.rerun()
+            live_log_viewer(task_name="full_pipeline", lines=40)
 
     st.divider()
 
@@ -194,3 +207,12 @@ def render():
                         st.rerun()
 
     conn.close()
+
+    # Auto-refresh every 2s when pipeline is running (must be last so page renders first)
+    @st.fragment(run_every=2)
+    def _content_refresh():
+        r = get_runner()
+        if r.is_running and r.task_name == "full_pipeline":
+            st.rerun()
+
+    _content_refresh()

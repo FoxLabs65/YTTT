@@ -184,6 +184,68 @@ def _download_audio(video_url: str, dest_path: Path) -> bool:
         return False
 
 
+def _search_openverse_music(query: str, mood: str, max_results: int = 5) -> list[dict]:
+    """Search Openverse for CC-licensed music. Categories: music. Length: medium (1-3 min)."""
+    url = "https://api.openverse.org/v1/audio/"
+    params = {
+        "q": query,
+        "categories": "music",
+        "page_size": min(max_results, 20),
+        "license_type": "commercial,modification",
+    }
+
+    try:
+        resp = http_requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        out = []
+        for r in results:
+            dur = r.get("duration") or 0
+            if MIN_DURATION <= dur <= MAX_DURATION:
+                out.append(r)
+            if len(out) >= max_results:
+                break
+        return out
+    except http_requests.RequestException as e:
+        logger.debug("Openverse music search failed for '%s': %s", query, e)
+        return []
+
+
+def _download_openverse_audio(audio: dict, dest_dir: Path) -> Path | None:
+    """Download Openverse audio. Fetches detail if url is empty."""
+    url = audio.get("url")
+    if not url:
+        detail_url = f"https://api.openverse.org/v1/audio/{audio.get('id', '')}/"
+        try:
+            dr = http_requests.get(detail_url, timeout=15)
+            dr.raise_for_status()
+            url = dr.json().get("url")
+        except (http_requests.RequestException, KeyError):
+            return None
+    if not url:
+        return None
+
+    audio_id = audio.get("id", "unknown")[:12]
+    title = _safe_filename(audio.get("title", "track"))
+    dest = dest_dir / f"ov_{audio_id}_{title}.mp3"
+    if dest.exists():
+        return dest
+
+    try:
+        resp = http_requests.get(url, timeout=90)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            f.write(resp.content)
+        if dest.stat().st_size > 10000:
+            logger.info("Downloaded Openverse music: %s (%.0f KB)", dest.name, dest.stat().st_size / 1024)
+            return dest
+        dest.unlink(missing_ok=True)
+    except http_requests.RequestException as e:
+        logger.debug("Openverse download failed for %s: %s", audio.get("title"), e)
+    return None
+
+
 def _search_freesound(tags: list[str], max_results: int = 5) -> list[dict]:
     """Search Freesound.org for Creative Commons Zero licensed music.
     Uses Token authentication (simple API key) -- no OAuth2 or callback URL needed.
@@ -309,6 +371,21 @@ def search_and_download_music(category: str, count: int = 3) -> list[Path]:
             if path:
                 downloaded.append(path)
 
+    # Source 3: Openverse (CC-licensed music; attribution required)
+    if len(downloaded) < count:
+        ov_queries = [q.replace(" no copyright", "").replace(" royalty free", "") for q in queries[:3]]
+        for query in ov_queries:
+            if len(downloaded) >= count:
+                break
+            ov_results = _search_openverse_music(query, mood, max_results=5)
+            random.shuffle(ov_results)
+            for audio in ov_results:
+                if len(downloaded) >= count:
+                    break
+                path = _download_openverse_audio(audio, mood_dir)
+                if path:
+                    downloaded.append(path)
+
     return downloaded
 
 
@@ -428,11 +505,20 @@ def source_music_for_script(script_id: int, category: str, tags: list[str] | Non
     # Record in database
     music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
     conn = get_connection()
+    src = "local"
+    if "yt_" in track_path.name:
+        src = "youtube"
+    elif "fs_" in track_path.name:
+        src = "freesound"
+    elif "ov_" in track_path.name:
+        src = "openverse"
+    elif "pixabay" in track_path.name:
+        src = "pixabay"
     insert_asset(
         conn,
         script_id=script_id,
         asset_type="music",
-        source="pixabay" if "pixabay" in track_path.name else "local",
+        source=src,
         source_id=track_path.stem,
         local_path=str(track_path),
         mood=music_config["mood"],

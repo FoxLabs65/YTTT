@@ -20,6 +20,7 @@ from models.database import (
     delete_assets_for_script,
     mark_video_archived,
     delete_rejected_video_record,
+    record_rejected_trend_sources,
 )
 
 logger = logging.getLogger(__name__)
@@ -79,9 +80,11 @@ def _cleanup_script_assets(script_id: int, conn) -> int:
     return deleted
 
 
-def cleanup_single_rejected_video(video_id: int) -> dict:
+def cleanup_single_rejected_video(video_id: int, defer_asset_cleanup: bool = False) -> dict:
     """Immediately delete files and DB entries for a single rejected video.
     Call this when user rejects a video in the review UI.
+    When defer_asset_cleanup=True (e.g. pipeline is running), skip deleting script assets
+    to avoid affecting in-progress composition. Asset cleanup will run on next --cleanup.
     """
     conn = get_connection()
     row = conn.execute(
@@ -94,6 +97,14 @@ def cleanup_single_rejected_video(video_id: int) -> dict:
 
     video = dict(row)
     script_id = video.get("script_id") or video.get("sid")
+    reason = video.get("rejection_reason") or ""
+
+    # Record trend sources so they are excluded from future ideation
+    if script_id:
+        conn2 = get_connection()
+        record_rejected_trend_sources(conn2, script_id, reason=reason)
+        conn2.close()
+
     conn = get_connection()
     files_deleted = 0
 
@@ -102,12 +113,14 @@ def cleanup_single_rejected_video(video_id: int) -> dict:
     if video.get("thumbnail_path") and _delete_file(video["thumbnail_path"]):
         files_deleted += 1
 
-    if script_id:
+    if script_id and not defer_asset_cleanup:
         files_deleted += _cleanup_script_assets(script_id, conn)
 
-    delete_rejected_video_record(conn, video_id)
+    if not defer_asset_cleanup:
+        delete_rejected_video_record(conn, video_id)
+    # When deferring: keep video record so cleanup_rejected can run later (e.g. after pipeline finishes)
     conn.close()
-    logger.info("Immediately cleaned rejected video #%d", video_id)
+    logger.info("Immediately cleaned rejected video #%d (defer_assets=%s)", video_id, defer_asset_cleanup)
     return {"cleaned": 1, "files_deleted": files_deleted}
 
 
@@ -128,6 +141,11 @@ def cleanup_rejected() -> dict:
         video_path = video.get("file_path", "")
         thumb_path = video.get("thumbnail_path", "")
         script_id = video.get("script_id") or video.get("sid")
+        reason = video.get("rejection_reason") or ""
+
+        # Record trend sources so they are excluded from future ideation
+        if script_id:
+            record_rejected_trend_sources(conn, script_id, reason=reason)
 
         if _delete_file(video_path):
             files_deleted += 1

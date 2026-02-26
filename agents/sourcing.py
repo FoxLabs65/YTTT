@@ -7,6 +7,7 @@ voiceovers for pending scripts.
 import asyncio
 import json
 import logging
+import random
 import re
 import uuid
 from pathlib import Path
@@ -138,7 +139,192 @@ def download_pexels_image(photo: dict, dest_dir: Path) -> Path | None:
         return None
 
 
+# --- Coverr API (free stock videos, non-commercial; attribution required) ---
+
+def search_coverr_videos(query: str, count: int = 5) -> list[dict]:
+    api_key = cfg("coverr_api_key")
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+
+    url = "https://api.coverr.co/videos"
+    params = {
+        "query": query,
+        "page_size": min(count, 20),
+        "urls": "true",
+        "api_key": api_key,
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("hits", [])
+    except requests.RequestException as e:
+        logger.warning("Coverr video search failed for '%s': %s", query, e)
+        return []
+
+
+def download_coverr_video(video: dict, dest_dir: Path) -> Path | None:
+    urls = video.get("urls", {})
+    download_url = urls.get("mp4_download") or urls.get("mp4")
+    if not download_url:
+        return None
+
+    vid_id = video.get("id", uuid.uuid4().hex[:12])
+    filename = f"coverr_{vid_id}.mp4"
+    dest = dest_dir / filename
+    if dest.exists():
+        return dest
+
+    try:
+        resp = requests.get(download_url, timeout=120, stream=True)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 64):
+                f.write(chunk)
+        logger.info("Downloaded Coverr video: %s", filename)
+        return dest
+    except requests.RequestException as e:
+        logger.warning("Failed to download Coverr video %s: %s", vid_id, e)
+        return None
+
+
+# --- Unsplash API (photos only; attribution required) ---
+
+def search_unsplash_images(query: str, count: int = 5) -> list[dict]:
+    api_key = cfg("unsplash_access_key")
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+
+    url = "https://api.unsplash.com/search/photos"
+    headers = {"Authorization": f"Client-ID {api_key}"}
+    params = {"query": query, "per_page": min(count, 15), "orientation": "portrait"}
+
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", [])
+    except requests.RequestException as e:
+        logger.warning("Unsplash image search failed for '%s': %s", query, e)
+        return []
+
+
+def download_unsplash_image(photo: dict, dest_dir: Path) -> Path | None:
+    urls = photo.get("urls", {})
+    url = urls.get("regular") or urls.get("full") or urls.get("small")
+    if not url:
+        return None
+
+    photo_id = photo.get("id", uuid.uuid4().hex)
+    filename = f"unsplash_{photo_id}.jpg"
+    dest = dest_dir / filename
+    if dest.exists():
+        return dest
+
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            f.write(resp.content)
+        logger.info("Downloaded Unsplash image: %s", filename)
+        return dest
+    except requests.RequestException as e:
+        logger.warning("Failed to download Unsplash image: %s", e)
+        return None
+
+
+# --- Openverse API (images + audio; CC-licensed; attribution required) ---
+
+OPENVERSE_BASE = "https://api.openverse.org/v1"
+
+def search_openverse_images(query: str, count: int = 5) -> list[dict]:
+    url = f"{OPENVERSE_BASE}/images/"
+    params = {"q": query, "page_size": min(count, 20), "license_type": "commercial,modification"}
+
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", [])
+    except requests.RequestException as e:
+        logger.warning("Openverse image search failed for '%s': %s", query, e)
+        return []
+
+
+def download_openverse_image(result: dict, dest_dir: Path) -> Path | None:
+    url = result.get("url")
+    if not url:
+        detail_url = f"{OPENVERSE_BASE}/images/{result.get('id', '')}/"
+        try:
+            dr = requests.get(detail_url, timeout=15)
+            dr.raise_for_status()
+            detail = dr.json()
+            url = detail.get("url")
+        except requests.RequestException:
+            pass
+    if not url:
+        return None
+
+    img_id = result.get("id", uuid.uuid4().hex)[:12]
+    ext = "jpg" if "jpg" in (result.get("filetype") or "").lower() else "png"
+    filename = f"openverse_{img_id}.{ext}"
+    dest = dest_dir / filename
+    if dest.exists():
+        return dest
+
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            f.write(resp.content)
+        logger.info("Downloaded Openverse image: %s", filename)
+        return dest
+    except requests.RequestException as e:
+        logger.warning("Failed to download Openverse image: %s", e)
+        return None
+
+
 # --- Pixabay API ---
+
+def search_pixabay_images(query: str, count: int = 5) -> list[dict]:
+    api_key = cfg("pixabay_api_key")
+    if not api_key or api_key.startswith("YOUR_"):
+        return []
+
+    url = "https://pixabay.com/api/"
+    params = {"key": api_key, "q": query, "per_page": min(count, 10), "safesearch": "true", "image_type": "photo"}
+
+    try:
+        resp = requests.get(url, params=params, timeout=30)
+        resp.raise_for_status()
+        return resp.json().get("hits", [])
+    except requests.RequestException as e:
+        logger.warning("Pixabay image search failed for '%s': %s", query, e)
+        return []
+
+
+def download_pixabay_image(hit: dict, dest_dir: Path) -> Path | None:
+    url = hit.get("largeImageURL") or hit.get("webformatURL") or hit.get("previewURL")
+    if not url:
+        return None
+
+    filename = f"pixabay_{hit.get('id', uuid.uuid4().hex)}.jpg"
+    dest = dest_dir / filename
+    if dest.exists():
+        return dest
+
+    try:
+        resp = requests.get(url, timeout=60)
+        resp.raise_for_status()
+        with open(dest, "wb") as f:
+            f.write(resp.content)
+        logger.info("Downloaded Pixabay image: %s", filename)
+        return dest
+    except requests.RequestException as e:
+        logger.warning("Failed to download Pixabay image: %s", e)
+        return None
+
 
 def search_pixabay_videos(query: str, count: int = 3) -> list[dict]:
     api_key = cfg("pixabay_api_key")
@@ -248,9 +434,21 @@ def generate_voiceover(
     """Generate TTS voiceover and word-boundary metadata for a script.
     Returns (audio_path, metadata_path) or (None, None) on failure.
     voice_override: if set, use this voice instead of category default.
+    Voice selection: voice_override > voiceover_voice_pool (random) > voiceover_voices[category].
+    When voiceover_voices[category] is a list, picks randomly for variety.
     """
-    voices = cfg("sourcing.voiceover_voices") or {}
-    voice = voice_override or voices.get(category, "en-US-AndrewMultilingualNeural")
+    voice = voice_override
+    if not voice:
+        pool = cfg("sourcing.voiceover_voice_pool")
+        if pool and isinstance(pool, list) and pool:
+            voice = random.choice(pool)
+        else:
+            voices = cfg("sourcing.voiceover_voices") or {}
+            cat_voice = voices.get(category, "en-US-AndrewMultilingualNeural")
+            if isinstance(cat_voice, list) and cat_voice:
+                voice = random.choice(cat_voice)
+            else:
+                voice = cat_voice if isinstance(cat_voice, str) else "en-US-AndrewMultilingualNeural"
     rate = cfg("sourcing.voiceover_rate") or "-5%"
 
     stem = f"vo_{script_id}_{uuid.uuid4().hex[:8]}"
@@ -462,79 +660,163 @@ def source_assets_for_script(script: dict) -> bool:
 
     videos_per_script = cfg("sourcing.pexels_videos_per_script") or 5
     assets_saved = 0
+    video_providers = cfg("sourcing.video_providers") or ["pexels", "pixabay", "coverr"]
 
-    # Download videos — search with expanded queries
-    for cue in search_queries:
+    # Download videos — rotate providers per query for variety
+    for i, cue in enumerate(search_queries):
         if assets_saved >= videos_per_script:
             break
+        provider = video_providers[i % len(video_providers)] if video_providers else "pexels"
 
-        pexels_videos = search_pexels_videos(cue, count=3)
-        for pv in pexels_videos[:2]:
-            path = download_pexels_video(pv, STOCK_DIR)
-            if path:
-                insert_asset(
-                    conn,
-                    script_id=script_id,
-                    asset_type="video",
-                    source="pexels",
-                    source_id=str(pv.get("id")),
-                    source_url=pv.get("url"),
-                    local_path=str(path),
-                    search_query=cue,
-                    duration=pv.get("duration"),
-                    width=pv.get("width"),
-                    height=pv.get("height"),
-                )
-                assets_saved += 1
-                if assets_saved >= videos_per_script:
-                    break
-
-    # Supplement with Pixabay if Pexels didn't provide enough
-    if assets_saved < 3:
-        for cue in search_queries[:6]:
-            if assets_saved >= videos_per_script:
-                break
-            pixabay_hits = search_pixabay_videos(cue, count=3)
-            for hit in pixabay_hits[:2]:
-                path = download_pixabay_video(hit, STOCK_DIR)
+        if provider == "pexels":
+            items = search_pexels_videos(cue, count=3)
+            for item in items[:2]:
+                path = download_pexels_video(item, STOCK_DIR)
                 if path:
                     insert_asset(
-                        conn,
-                        script_id=script_id,
-                        asset_type="video",
-                        source="pixabay",
-                        source_id=str(hit.get("id")),
-                        local_path=str(path),
-                        search_query=cue,
+                        conn, script_id=script_id, asset_type="video", source="pexels",
+                        source_id=str(item.get("id")), source_url=item.get("url"),
+                        local_path=str(path), search_query=cue,
+                        duration=item.get("duration"), width=item.get("width"), height=item.get("height"),
+                    )
+                    assets_saved += 1
+                    if assets_saved >= videos_per_script:
+                        break
+        elif provider == "pixabay":
+            items = search_pixabay_videos(cue, count=3)
+            for item in items[:2]:
+                path = download_pixabay_video(item, STOCK_DIR)
+                if path:
+                    insert_asset(
+                        conn, script_id=script_id, asset_type="video", source="pixabay",
+                        source_id=str(item.get("id")), local_path=str(path), search_query=cue,
+                    )
+                    assets_saved += 1
+                    if assets_saved >= videos_per_script:
+                        break
+        elif provider == "coverr":
+            items = search_coverr_videos(cue, count=3)
+            for item in items[:2]:
+                path = download_coverr_video(item, STOCK_DIR)
+                if path:
+                    insert_asset(
+                        conn, script_id=script_id, asset_type="video", source="coverr",
+                        source_id=str(item.get("id")), local_path=str(path), search_query=cue,
+                        duration=item.get("duration"), width=item.get("max_width"), height=item.get("max_height"),
                     )
                     assets_saved += 1
                     if assets_saved >= videos_per_script:
                         break
 
-    # Download images — search with broader queries and both APIs
+    # Fallback: if we didn't get enough videos, try other providers
+    if assets_saved < 3:
+        for cue in search_queries[:6]:
+            if assets_saved >= videos_per_script:
+                break
+            for prov in ["pexels", "pixabay", "coverr"]:
+                if prov not in video_providers:
+                    continue
+                if prov == "pexels":
+                    items = search_pexels_videos(cue, count=2)
+                    for item in items[:1]:
+                        path = download_pexels_video(item, STOCK_DIR)
+                        if path:
+                            insert_asset(conn, script_id=script_id, asset_type="video", source="pexels",
+                                source_id=str(item.get("id")), source_url=item.get("url"),
+                                local_path=str(path), search_query=cue,
+                                duration=item.get("duration"), width=item.get("width"), height=item.get("height"))
+                            assets_saved += 1
+                            break
+                elif prov == "pixabay":
+                    items = search_pixabay_videos(cue, count=2)
+                    for item in items[:1]:
+                        path = download_pixabay_video(item, STOCK_DIR)
+                        if path:
+                            insert_asset(conn, script_id=script_id, asset_type="video", source="pixabay",
+                                source_id=str(item.get("id")), local_path=str(path), search_query=cue)
+                            assets_saved += 1
+                            break
+                elif prov == "coverr":
+                    items = search_coverr_videos(cue, count=2)
+                    for item in items[:1]:
+                        path = download_coverr_video(item, STOCK_DIR)
+                        if path:
+                            insert_asset(conn, script_id=script_id, asset_type="video", source="coverr",
+                                source_id=str(item.get("id")), local_path=str(path), search_query=cue,
+                                duration=item.get("duration"), width=item.get("max_width"), height=item.get("max_height"))
+                            assets_saved += 1
+                            break
+                if assets_saved >= videos_per_script:
+                    break
+
+    # Download images — rotate providers for variety
     images_saved = 0
-    for q in search_queries[:6]:
+    image_providers = cfg("sourcing.image_providers") or ["pexels", "pixabay", "unsplash", "openverse"]
+    for i, q in enumerate(search_queries[:8]):
         if images_saved >= 3:
             break
-        photos = search_pexels_images(q, count=3)
-        for photo in photos[:2]:
-            path = download_pexels_image(photo, IMAGES_DIR)
-            if path:
-                insert_asset(
-                    conn,
-                    script_id=script_id,
-                    asset_type="image",
-                    source="pexels",
-                    source_id=str(photo.get("id")),
-                    source_url=photo.get("url"),
-                    local_path=str(path),
-                    search_query=q,
-                    width=photo.get("width"),
-                    height=photo.get("height"),
-                )
-                images_saved += 1
-                if images_saved >= 3:
-                    break
+        provider = image_providers[i % len(image_providers)] if image_providers else "pexels"
+
+        if provider == "pexels":
+            items = search_pexels_images(q, count=3)
+            for item in items[:2]:
+                path = download_pexels_image(item, IMAGES_DIR)
+                if path:
+                    insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
+                        source_id=str(item.get("id")), source_url=item.get("url"),
+                        local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
+                    images_saved += 1
+                    if images_saved >= 3:
+                        break
+        elif provider == "pixabay":
+            items = search_pixabay_images(q, count=3)
+            for item in items[:2]:
+                path = download_pixabay_image(item, IMAGES_DIR)
+                if path:
+                    insert_asset(conn, script_id=script_id, asset_type="image", source="pixabay",
+                        source_id=str(item.get("id")), local_path=str(path), search_query=q,
+                        width=item.get("webformatWidth"), height=item.get("webformatHeight"))
+                    images_saved += 1
+                    if images_saved >= 3:
+                        break
+        elif provider == "unsplash":
+            items = search_unsplash_images(q, count=3)
+            for item in items[:2]:
+                path = download_unsplash_image(item, IMAGES_DIR)
+                if path:
+                    insert_asset(conn, script_id=script_id, asset_type="image", source="unsplash",
+                        source_id=str(item.get("id")), source_url=item.get("urls", {}).get("full"),
+                        local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
+                    images_saved += 1
+                    if images_saved >= 3:
+                        break
+        elif provider == "openverse":
+            items = search_openverse_images(q, count=3)
+            for item in items[:2]:
+                path = download_openverse_image(item, IMAGES_DIR)
+                if path:
+                    insert_asset(conn, script_id=script_id, asset_type="image", source="openverse",
+                        source_id=str(item.get("id")), source_url=item.get("foreign_landing_url"),
+                        local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
+                    images_saved += 1
+                    if images_saved >= 3:
+                        break
+
+    # Fallback images from Pexels if still needed
+    if images_saved < 3:
+        for q in search_queries[:4]:
+            if images_saved >= 3:
+                break
+            photos = search_pexels_images(q, count=2)
+            for photo in photos[:1]:
+                path = download_pexels_image(photo, IMAGES_DIR)
+                if path:
+                    insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
+                        source_id=str(photo.get("id")), source_url=photo.get("url"),
+                        local_path=str(path), search_query=q, width=photo.get("width"), height=photo.get("height"))
+                    images_saved += 1
+                    if images_saved >= 3:
+                        break
 
     # Step 4: Source background music
     from agents.music_scraper import source_music_for_script

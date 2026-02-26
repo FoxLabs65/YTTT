@@ -8,6 +8,8 @@
 # --- API Keys ---
 pexels_api_key: "YOUR_PEXELS_API_KEY"
 pixabay_api_key: "YOUR_PIXABAY_API_KEY"
+coverr_api_key: ""  # Optional: free at https://api.coverr.co/docs/ (non-commercial; attribution required)
+unsplash_access_key: ""  # Optional: free at https://unsplash.com/developers (attribution required)
 anthropic_api_key: "YOUR_ANTHROPIC_API_KEY"
 gemini_api_key: ""  # Fallback LLM: free at https://aistudio.google.com/apikey
 freesound_api_key: ""  # Optional: free at https://freesound.org/apiv2/apply/ for extra music variety
@@ -67,18 +69,32 @@ ideation:
 sourcing:
   pexels_videos_per_script: 5
   pixabay_videos_per_script: 3
+  # Provider rotation for variety: "random" | "round_robin" | "weighted"
+  provider_rotation: "weighted"
+  video_providers: [pexels, pixabay, coverr]  # Enable coverr if API key set
+  image_providers: [pexels, pixabay, unsplash, openverse]  # openverse needs no key
+  provider_weights:  # For weighted strategy
+    pexels: 40
+    pixabay: 30
+    coverr: 20
+    unsplash: 25
+    openverse: 15
   music_moods:
     motivational: "uplifting"
     funny: "funny"
     meme: "quirky"
     news: "dramatic"
     storytime: "chill"
+  # Per-category voice (string) or list for random variety within category
   voiceover_voices:
     motivational: "en-US-AndrewMultilingualNeural"
     funny: "en-US-BrianMultilingualNeural"
     meme: "en-US-BrianMultilingualNeural"
     news: "en-US-AndrewMultilingualNeural"
     storytime: "en-US-AvaMultilingualNeural"
+  # Optional: pool of voices to rotate through for ALL scripts (overrides per-category)
+  # When set, each script gets a random voice from this list for variety
+  voiceover_voice_pool: []  # e.g. ["en-US-AndrewMultilingualNeural", "en-US-AvaMultilingualNeural", "en-US-BrianMultilingualNeural", "en-GB-SoniaNeural"]
   voiceover_rate: "-5%"
   music:
     auto_download: true             # Auto-download from YouTube/Freesound when no local track matches
@@ -118,6 +134,13 @@ pipeline:
   max_retries: 3           # Max attempts per phase before giving up
   retry_delays: [30, 60, 120]  # Seconds between retries (escalating backoff)
   ideation_bonus_retry: true   # Extra retry round for ideation when 0 scripts produced
+
+# --- YouTube Reaction Shorts (optional; human-in-the-loop) ---
+# DISCLAIMER: Downloading YouTube content may violate ToS. Use at your own risk.
+reaction:
+  enabled: false  # Set true to enable reaction discovery in pipeline
+  allowed_categories: [gaming, podcast, entertainment, comedy, education]
+  max_candidates_per_run: 15
 
 # --- Scheduler ---
 scheduler:

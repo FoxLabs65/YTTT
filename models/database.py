@@ -129,7 +129,7 @@ def init_db():
 
 
 def _migrate_schema(conn: sqlite3.Connection):
-    """Add new columns to existing databases."""
+    """Add new columns and tables to existing databases."""
     try:
         conn.execute("ALTER TABLE scripts ADD COLUMN voice_override TEXT")
     except sqlite3.OperationalError:
@@ -138,6 +138,14 @@ def _migrate_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE scripts ADD COLUMN music_override_path TEXT")
     except sqlite3.OperationalError:
         pass
+    # Rejection history: trend IDs from rejected videos/scripts — excluded from future ideation
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rejected_trend_ids (
+            trend_id INTEGER PRIMARY KEY,
+            rejected_at TEXT NOT NULL,
+            reason TEXT
+        )
+    """)
 
 
 def _now() -> str:
@@ -164,15 +172,60 @@ def insert_trend(conn: sqlite3.Connection, **kwargs) -> int | None:
         return None
 
 
-def get_top_trends(conn: sqlite3.Connection, limit: int = 50, hours: int = 48) -> list[dict]:
+def get_top_trends(
+    conn: sqlite3.Connection,
+    limit: int = 50,
+    hours: int = 48,
+    exclude_trend_ids: list[int] | None = None,
+) -> list[dict]:
+    """Return top trends. Optionally exclude trend IDs that led to rejected content."""
     cutoff = datetime.now(timezone.utc).isoformat()
-    rows = conn.execute(
-        """SELECT * FROM trends
-           WHERE scraped_at >= datetime(?, '-' || ? || ' hours')
-           ORDER BY trend_score DESC LIMIT ?""",
-        (cutoff, hours, limit),
-    ).fetchall()
+    if exclude_trend_ids:
+        placeholders = ",".join("?" * len(exclude_trend_ids))
+        rows = conn.execute(
+            f"""SELECT * FROM trends
+               WHERE scraped_at >= datetime(?, '-' || ? || ' hours')
+                 AND id NOT IN ({placeholders})
+               ORDER BY trend_score DESC LIMIT ?""",
+            (cutoff, hours, *exclude_trend_ids, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT * FROM trends
+               WHERE scraped_at >= datetime(?, '-' || ? || ' hours')
+               ORDER BY trend_score DESC LIMIT ?""",
+            (cutoff, hours, limit),
+        ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_rejected_trend_ids(conn: sqlite3.Connection) -> set[int]:
+    """Return trend IDs that led to rejected content (excluded from ideation)."""
+    rows = conn.execute("SELECT trend_id FROM rejected_trend_ids").fetchall()
+    return {r["trend_id"] for r in rows}
+
+
+def record_rejected_trend_sources(conn: sqlite3.Connection, script_id: int, reason: str | None = None):
+    """Record trend IDs from a rejected script so they are excluded from future ideation."""
+    row = conn.execute(
+        "SELECT trend_source_ids FROM scripts WHERE id = ?", (script_id,)
+    ).fetchone()
+    if not row or not row["trend_source_ids"]:
+        return
+    try:
+        ids = json.loads(row["trend_source_ids"])
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(ids, list):
+        return
+    now = _now()
+    for tid in ids:
+        if isinstance(tid, int):
+            conn.execute(
+                "INSERT OR IGNORE INTO rejected_trend_ids (trend_id, rejected_at, reason) VALUES (?, ?, ?)",
+                (tid, now, reason or ""),
+            )
+    conn.commit()
 
 
 def get_trend_categories(conn: sqlite3.Connection, hours: int = 168) -> list[str]:

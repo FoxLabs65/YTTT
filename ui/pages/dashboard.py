@@ -13,7 +13,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 
 from models.database import get_connection, get_stats
-from ui.components import metric_card, section_header, status_badge, log_viewer
+from ui.components import metric_card, section_header, status_badge, live_log_viewer
 from ui.runner import get_runner
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -62,16 +62,11 @@ def render():
                 unsafe_allow_html=True,
             )
             with st.expander("Live Log", expanded=True):
-                log_viewer(runner.get_log_tail(30))
-            col_stop, col_refresh = st.columns(2)
-            with col_stop:
-                if st.button("Stop", type="secondary"):
-                    runner.stop()
-                    st.toast("Task stopped")
-                    st.rerun()
-            with col_refresh:
-                if st.button("Refresh Log"):
-                    st.rerun()
+                live_log_viewer(task_name=None, lines=40)
+            if st.button("Stop", type="secondary"):
+                runner.stop()
+                st.toast("Task stopped")
+                st.rerun()
         elif runner.status in ("completed", "failed"):
             dot = "success" if runner.status == "completed" else "failed"
             st.markdown(
@@ -82,7 +77,7 @@ def render():
                 unsafe_allow_html=True,
             )
             with st.expander("Last Run Log"):
-                log_viewer(runner.get_log_tail(50))
+                live_log_viewer(task_name=None, lines=50)
         else:
             st.markdown(
                 '<div class="pipeline-status">'
@@ -173,3 +168,12 @@ def render():
             metric_card(name, f"{_dir_size_mb(path):.1f} MB")
 
     conn.close()
+
+    # Auto-refresh every 2s when any task is running (must be last so page renders first)
+    @st.fragment(run_every=2)
+    def _dashboard_refresh():
+        r = get_runner()
+        if r.is_running:
+            st.rerun()
+
+    _dashboard_refresh()

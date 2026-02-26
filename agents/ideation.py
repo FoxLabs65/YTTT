@@ -18,6 +18,7 @@ from models.database import (
     get_connection,
     get_top_trends,
     get_top_tags,
+    get_rejected_trend_ids,
     insert_script,
 )
 
@@ -33,12 +34,10 @@ def _load_template(category: str) -> str:
     # Fallback generic prompt
     return """You are a viral short-form content writer.
 
-Given these trending topics on YouTube/TikTok today:
+Given these trending topics on YouTube/TikTok:
 {trending_topics}
 
-Today's date: {today_date}
-
-CRITICAL: If any script mentions a date, day, month, or year, use today's date ({today_date}). Never use past or future dates — this makes videos look stale before publishing.
+CRITICAL: NEVER include any specific day, date, month, or year in titles, hooks, or script body. Dates make videos look stale and lose longevity. Use evergreen phrasing instead (e.g. "recently", "now", "these days", "right now").
 
 Generate {n} original short video scripts (15-45 seconds each). Each script must:
 - Ride on a currently trending topic/tag but be ORIGINAL content (not copying)
@@ -170,7 +169,9 @@ def generate_scripts(
 
     conn = get_connection()
     if not trends:
-        trends = get_top_trends(conn, limit=20)
+        excluded = get_rejected_trend_ids(conn)
+        exclude_list = list(excluded) if excluded else None
+        trends = get_top_trends(conn, limit=20, exclude_trend_ids=exclude_list)
     if not tags:
         tags = get_top_tags(conn, limit=30)
     conn.close()
@@ -181,12 +182,10 @@ def generate_scripts(
 
     trending_text = _format_trends_for_prompt(trends, tags)
     template = _load_template(category)
-    today_str = datetime.now().strftime("%A, %B %d, %Y")
     prompt = (
         template.replace("{trending_topics}", trending_text)
         .replace("{n}", str(count))
         .replace("{category}", category)
-        .replace("{today_date}", today_str)
     )
 
     logger.info("Generating %d %s scripts...", count, category)
