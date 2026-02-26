@@ -270,13 +270,13 @@ def _archive_video(video_path: str):
         logger.info("Archived: %s -> published/", src.name)
 
 
-def run_uploads() -> dict:
-    """Upload all pending approved videos."""
-    logger.info("Starting uploads...")
+def run_uploads(platform: str | None = None) -> dict:
+    """Upload all pending approved videos. If platform is 'youtube' or 'tiktok', upload only to that platform."""
+    logger.info("Starting uploads%s...", f" ({platform})" if platform else "")
     conn = get_connection()
 
-    yt_uploads = get_pending_uploads(conn, platform="youtube")
-    tt_uploads = get_pending_uploads(conn, platform="tiktok")
+    yt_uploads = get_pending_uploads(conn, platform="youtube") if platform in (None, "youtube") else []
+    tt_uploads = get_pending_uploads(conn, platform="tiktok") if platform in (None, "tiktok") else []
     conn.close()
 
     yt_success = 0

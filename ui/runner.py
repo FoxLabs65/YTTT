@@ -5,6 +5,7 @@ Runs pipeline phases as subprocesses so the Streamlit UI stays responsive.
 Streams stdout/stderr to a log file that pages can poll via st.session_state.
 """
 
+import logging
 import subprocess
 import threading
 import time
@@ -12,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
+logger = logging.getLogger("ui.runner")
 LOG_DIR = PROJECT_ROOT / "logs" / "ui_runs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +75,7 @@ class TaskRunner:
         self.finished_at = None
         self.exit_code = None
 
+        logger.info("Starting task: %s (log: %s)", task_name, self.log_path)
         self._thread = threading.Thread(target=self._run, args=(cmd,), daemon=True)
         self._thread.start()
         return True
@@ -98,15 +101,30 @@ class TaskRunner:
                 log_f.write(f"\n=== Finished with exit code {self.exit_code} ===\n")
 
             self.status = "completed" if self.exit_code == 0 else "failed"
+            if self.exit_code != 0:
+                logger.error(
+                    "Task %s failed with exit code %s (log: %s)",
+                    self.task_name,
+                    self.exit_code,
+                    self.log_path,
+                )
         except Exception as e:
             self.status = "failed"
             self.exit_code = -1
+            logger.exception("Task %s raised exception: %s", self.task_name, e)
             if self.log_path and self.log_path.exists():
                 with open(self.log_path, "a", encoding="utf-8") as lf:
                     lf.write(f"\n=== EXCEPTION: {e} ===\n")
         finally:
             self.finished_at = datetime.now()
             self.process = None
+            logger.info(
+                "Task %s finished: status=%s exit_code=%s elapsed=%s",
+                self.task_name,
+                self.status,
+                self.exit_code,
+                self.elapsed,
+            )
 
     def stop(self):
         """Kill the running process."""

@@ -15,7 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from models.config import load_config, save_config, reload_config
-from models.database import get_connection, get_top_trends, get_top_tags
+from models.database import get_connection, get_top_trends, get_top_tags, get_trend_categories, purge_discovery_data
 from ui.components import section_header, metric_card, log_viewer, live_log_viewer
 from ui.runner import get_runner
 
@@ -41,6 +41,15 @@ def render():
 
     conn = get_connection()
     runner = get_runner()
+
+    # Auto-refresh every 2s when discovery is running (updates status, trends, tags)
+    @st.fragment(run_every=2)
+    def _discovery_refresh():
+        r = get_runner()
+        if r.is_running and r.task_name == "discovery":
+            st.rerun()
+
+    _discovery_refresh()
 
     # ── Search Criteria Manager ─────────────────────────────────
     section_header("Search Criteria")
@@ -173,7 +182,7 @@ def render():
 
     # ── Run Discovery ───────────────────────────────────────────
     section_header("Run Discovery")
-    col_run, col_status = st.columns([1, 2])
+    col_run, col_stop, col_status = st.columns([1, 1, 2])
     with col_run:
         if st.button("Scrape Now", type="primary", disabled=runner.is_running, width="stretch"):
             # Auto-save current selection so backend uses it (config is read fresh by subprocess)
@@ -181,22 +190,46 @@ def render():
             runner.start("discovery")
             st.toast("Search criteria saved and discovery started!")
             st.rerun()
-    with col_status:
+    with col_stop:
         if runner.is_running and runner.task_name == "discovery":
-            st.info(f"Running... ({runner.elapsed})")
-            with st.expander("Live Log", expanded=True):
-                live_log_viewer(task_name="discovery", lines=40)
+            if "_disc_stop_confirm" in st.session_state:
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Confirm", type="primary", key="disc_stop_yes"):
+                        runner.stop()
+                        conn_purge = get_connection()
+                        trends_del, tags_del = purge_discovery_data(conn_purge)
+                        conn_purge.close()
+                        st.session_state.pop("_disc_stop_confirm", None)
+                        st.toast(f"Stopped. Purged {trends_del} trends and {tags_del} tags.")
+                        st.rerun()
+                with c2:
+                    if st.button("Cancel", key="disc_stop_cancel"):
+                        st.session_state.pop("_disc_stop_confirm", None)
+                        st.rerun()
+            elif st.button("Stop & Purge", type="secondary", width="stretch", help="Stop discovery and delete all trends/tags"):
+                st.session_state["_disc_stop_confirm"] = True
+                st.rerun()
+
+    # Live log with elapsed time (auto-refreshes every 2s when running)
+    if runner.is_running and runner.task_name == "discovery":
+        with st.expander("Live Log", expanded=True):
+            live_log_viewer(task_name="discovery", lines=40)
 
     st.divider()
 
     # ── Trend Browser ───────────────────────────────────────────
     section_header("Trend Browser")
 
+    # Category filter: use actual categories from trends (includes "other" for uncategorized)
+    trend_cats = get_trend_categories(conn, hours=lookback)
+    cat_options = ["All"] + sorted(set(trend_cats) | set(all_cats)) if trend_cats else ["All"] + all_cats
+
     col_filter1, col_filter2, col_filter3 = st.columns(3)
     with col_filter1:
         platform_filter = st.selectbox("Platform", ["All", "youtube", "tiktok"], key="disc_platform")
     with col_filter2:
-        cat_filter = st.selectbox("Category", ["All"] + all_cats, key="disc_cat_filter")
+        cat_filter = st.selectbox("Category", cat_options, key="disc_cat_filter")
     with col_filter3:
         score_min = st.number_input("Min Trend Score", value=0.0, step=0.5, key="disc_score_min")
 
@@ -206,12 +239,18 @@ def render():
     if platform_filter != "All":
         trends = [t for t in trends if t["platform"] == platform_filter]
     if cat_filter != "All":
-        trends = [t for t in trends if t.get("category") == cat_filter]
+        trends = [t for t in trends if (t.get("category") or "other") == cat_filter]
     if score_min > 0:
         trends = [t for t in trends if (t.get("trend_score") or 0) >= score_min]
 
     if trends:
         df = pd.DataFrame(trends)
+        # Ensure category column exists (fill nulls with "other")
+        if "category" in df.columns:
+            df = df.copy()
+            df["category"] = df["category"].fillna("other")
+        else:
+            df["category"] = "other"
         display_cols = ["id", "platform", "title", "category", "trend_score", "view_count", "scraped_at"]
         available = [c for c in display_cols if c in df.columns]
         df_display = df[available].copy()

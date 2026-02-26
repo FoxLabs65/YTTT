@@ -73,6 +73,25 @@ def _extract_tags_from_text(text: str) -> list[str]:
     return re.findall(r"#(\w+)", text)
 
 
+# Tag/keyword -> category mapping for trend classification
+_CATEGORY_KEYWORDS = {
+    "motivational": ("motivation", "motivational", "inspire", "inspiring", "quote", "mindset", "success", "goals"),
+    "funny": ("funny", "humor", "comedy", "laugh", "joke", "hilarious"),
+    "meme": ("meme", "memes", "relatable", "pov", "viral"),
+    "news": ("news", "breaking", "update", "reaction", "headline"),
+    "storytime": ("storytime", "story", "storytelling", "anecdote", "happened"),
+}
+
+
+def _infer_category(tags: list[str], title: str) -> str:
+    """Infer content category from tags and title. Returns 'other' if no match."""
+    combined = " ".join(t.lower() for t in tags) + " " + (title or "").lower()
+    for cat, keywords in _CATEGORY_KEYWORDS.items():
+        if any(kw in combined for kw in keywords):
+            return cat
+    return "other"
+
+
 def scrape_youtube_shorts(queries: list[str] | None = None, max_per_query: int = 20) -> list[dict]:
     queries = queries or cfg("discovery.youtube_queries") or ["trending shorts"]
     max_per_query = max_per_query or cfg("discovery.max_results_per_query") or 20
@@ -112,6 +131,7 @@ def scrape_youtube_shorts(queries: list[str] | None = None, max_per_query: int =
                 title=title,
                 description=description[:2000] if description else None,
                 tags=all_tags,
+                category=_infer_category(all_tags, title),
                 view_count=view_count,
                 like_count=entry.get("like_count") or 0,
                 comment_count=entry.get("comment_count") or 0,
@@ -178,6 +198,7 @@ def scrape_tiktok_trending(hashtags: list[str] | None = None, max_per_tag: int =
                 title=title[:500] if title else None,
                 description=description[:2000] if description else None,
                 tags=all_tags,
+                category=_infer_category(all_tags, title),
                 view_count=view_count,
                 like_count=entry.get("like_count") or 0,
                 comment_count=entry.get("comment_count") or 0,

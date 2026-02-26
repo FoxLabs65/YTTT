@@ -11,6 +11,11 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# Configure logging for UI and backend traceability (errors -> logs/errors.log)
+from config.logging_config import configure_logging
+
+configure_logging(log_to_ui=True)
+
 from models.database import init_db
 
 init_db()
@@ -48,7 +53,12 @@ pg = st.navigation(pages)
 
 with st.sidebar:
     st.caption("Shorts Engine v1.0")
-    from ui.components import running_indicator
-    running_indicator()
+
+    @st.fragment(run_every=2)
+    def _sidebar_status():
+        from ui.components import running_indicator
+        running_indicator()
+
+    _sidebar_status()
 
 pg.run()

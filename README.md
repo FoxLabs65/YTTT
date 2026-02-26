@@ -494,6 +494,28 @@ Or add it permanently via Windows Settings > System > Environment Variables. Rep
 
 The YouTube Data API allows ~5-6 uploads per day (10,000 quota units). The quota resets at **midnight Pacific Time**. Wait and try again, or reduce `videos_per_run` in settings.
 
+### "App has not completed the Google verification process" / "Only developer-approved testers"
+
+Your OAuth app is in **Testing** mode. Add your Google account as a test user:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) → your project
+2. **APIs & Services** → **OAuth consent screen**
+3. Under **Test users**, click **+ ADD USERS**
+4. Add the Gmail address of the YouTube channel you want to upload to
+5. Save and try the upload again
+
+Until your app is verified by Google, only listed test users can sign in. For personal use, adding yourself as a test user is sufficient.
+
+### "Doesn't have permissions to upload and set custom video thumbnails" (403)
+
+The video uploads successfully, but the custom thumbnail fails. YouTube requires **channel verification** before custom thumbnails can be set via the API.
+
+1. Go to [YouTube Studio](https://studio.youtube.com) → **Settings** → **Channel** → **Feature eligibility**
+2. Complete **phone verification** if prompted
+3. Wait a few minutes and try uploading again
+
+Until verified, videos will upload but YouTube will use an auto-generated thumbnail.
+
 ### "TikTok scraping returns empty" / "No working app info"
 
 TikTok actively blocks scrapers. The discovery agent automatically falls back to searching YouTube for TikTok-originated trending content (e.g. "tiktok viral" queries) when direct TikTok scraping fails. This means trending topics from TikTok still get picked up through YouTube cross-posts. YouTube is the primary and most reliable trend source.
@@ -537,17 +559,16 @@ If port 8501 is busy, streamlit will try 8502, 8503, etc. Check the terminal out
 
 ### Logs
 
-All agents write to the `logs/` directory. Check these files for detailed error messages:
+All components use centralized logging for end-to-end traceability:
 
-```
-logs/pipeline_YYYYMMDD.log    Full pipeline run log
-logs/discovery.log            Trend scraping details
-logs/ideation.log             Script generation details
-logs/sourcing.log             Asset download details
-logs/composer.log             Video rendering details
-logs/uploader.log             Upload details
-logs/music_scraper.log        Music download details
-```
+| Log file | Purpose |
+|----------|---------|
+| `logs/errors.log` | **Start here for troubleshooting** — all ERROR and CRITICAL messages |
+| `logs/pipeline_YYYYMMDD.log` | Full pipeline and agent logs (INFO and above) |
+| `logs/ui.log` | UI/frontend events (when dashboard is running) |
+| `logs/ui_runs/*.log` | Per-task logs (discovery, upload, etc.) from the UI runner |
+
+Agent-specific logs (when run standalone): `discovery.log`, `ideation.log`, `sourcing.log`, `composer.log`, `uploader.log`, `cleanup.log`, `music_scraper.log`
 
 ---
 

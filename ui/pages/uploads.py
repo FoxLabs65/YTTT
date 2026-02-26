@@ -14,7 +14,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 
 from models.database import get_connection, get_pending_uploads, get_videos_by_status
-from ui.components import section_header, status_badge, metric_card
+from ui.components import section_header, status_badge, metric_card, live_log_viewer
 from ui.runner import get_runner
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -68,12 +68,23 @@ def render():
     else:
         st.info("No pending uploads. Approve videos in the Review tab first.")
 
-    if runner.is_running and runner.task_name == "upload":
-        from ui.components import log_viewer
+    # Show upload log when running or when upload just finished (real-time refresh)
+    upload_active = runner.task_name == "upload" and (runner.is_running or runner.status in ("completed", "failed"))
+    if upload_active:
         with st.expander("Upload Log", expanded=True):
-            log_viewer(runner.get_log_tail(20))
-        if st.button("Refresh"):
+            live_log_viewer(task_name="upload", lines=40)
+        if st.button("Refresh", help="Refresh page to see latest status"):
             st.rerun()
+
+    # Auto-refresh when upload is running (updates status, pending list, log)
+    # Use 5s interval to reduce "fragment does not exist" warnings during reruns
+    @st.fragment(run_every=5)
+    def _upload_refresh():
+        r = get_runner()
+        if r.is_running and r.task_name == "upload":
+            st.rerun()
+
+    _upload_refresh()
 
     st.divider()
 

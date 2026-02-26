@@ -19,18 +19,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Configure logging first for end-to-end traceability (errors -> logs/errors.log)
+from config.logging_config import configure_logging
+
 PROJECT_ROOT = Path(__file__).parent
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / f"pipeline_{datetime.now().strftime('%Y%m%d')}.log"),
-    ],
-)
+configure_logging(log_to_ui=False)
 logger = logging.getLogger("main")
 
 
@@ -231,12 +227,12 @@ def cmd_run(category: str | None = None, count: int | None = None, max_retries: 
         _send_notification("Pipeline finished but produced no new videos. Check logs for errors.")
 
 
-def cmd_upload():
-    """Upload all approved videos."""
+def cmd_upload(platform: str | None = None):
+    """Upload all approved videos. If platform is 'youtube' or 'tiktok', upload only to that platform."""
     from models.database import init_db
     init_db()
     from agents.uploader import run_uploads
-    result = run_uploads()
+    result = run_uploads(platform=platform)
     logger.info("Upload result: %s", result)
 
 
@@ -495,6 +491,7 @@ def main():
     parser.add_argument("--script-id", type=int, help="Script ID for regenerate")
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
     parser.add_argument("--music-path", type=str, help="Music file path override for regenerate")
+    parser.add_argument("--platform", type=str, choices=["youtube", "tiktok"], help="Upload to specific platform only (youtube or tiktok)")
     parser.add_argument("--category", type=str, help="Content category for ideation (motivational/funny/meme/news/storytime)")
     parser.add_argument("--count", type=int, help="Number of scripts to generate")
     parser.add_argument("--retries", type=int, help="Override max retries per phase (default: from config or 3)")
@@ -513,7 +510,7 @@ def main():
     elif args.run:
         cmd_run(category=args.category, count=args.count, max_retries=args.retries)
     elif args.upload:
-        cmd_upload()
+        cmd_upload(platform=args.platform)
     elif args.cleanup:
         cmd_cleanup()
     elif args.music:

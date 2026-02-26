@@ -175,6 +175,18 @@ def get_top_trends(conn: sqlite3.Connection, limit: int = 50, hours: int = 48) -
     return [dict(r) for r in rows]
 
 
+def get_trend_categories(conn: sqlite3.Connection, hours: int = 168) -> list[str]:
+    """Return distinct category values from trends (for filter dropdown)."""
+    cutoff = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        """SELECT DISTINCT COALESCE(category, 'other') AS cat FROM trends
+           WHERE scraped_at >= datetime(?, '-' || ? || ' hours')
+           ORDER BY cat""",
+        (cutoff, hours),
+    ).fetchall()
+    return [r["cat"] for r in rows]
+
+
 def update_trending_tag(conn: sqlite3.Connection, tag: str, platform: str):
     now = _now()
     conn.execute(
@@ -194,6 +206,14 @@ def get_top_tags(conn: sqlite3.Connection, limit: int = 30) -> list[dict]:
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def purge_discovery_data(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Delete all trends and trending_tags. Returns (trends_deleted, tags_deleted)."""
+    cur_t = conn.execute("DELETE FROM trends")
+    cur_tag = conn.execute("DELETE FROM trending_tags")
+    conn.commit()
+    return cur_t.rowcount, cur_tag.rowcount
 
 
 # --- Scripts ---
