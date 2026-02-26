@@ -1,3 +1,6 @@
+# Backup folder
+Backup/
+
 # Secrets and credentials
 config/settings.yaml
 config/settings.yaml.bak
