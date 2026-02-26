@@ -1,0 +1,41 @@
+# Secrets and credentials
+config/settings.yaml
+config/client_secret.json
+config/token.json
+
+# Database
+data/
+
+# Downloaded assets
+assets/stock_footage/
+assets/images/
+assets/music/
+assets/voiceovers/
+
+# Output videos
+output/
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
