@@ -62,7 +62,7 @@ def render():
     with col_f1:
         view_status = st.selectbox("Status", ["pending", "approved", "rejected", "composed"], key="rev_status")
     with col_f2:
-        cat_filter = st.selectbox("Category", ["All", "motivational", "funny", "meme", "news", "storytime"], key="rev_cat")
+        cat_filter = st.selectbox("Category", ["All", "motivational", "funny", "meme", "news", "storytime", "reaction"], key="rev_cat")
     with col_f3:
         st.write("")
 

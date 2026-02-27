@@ -9,6 +9,7 @@ import json
 import logging
 import random
 import re
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -20,9 +21,12 @@ from models.database import (
     get_scripts_by_status,
     get_assets_for_script,
     get_dominant_trend_topic,
+    get_trends_by_ids,
     insert_asset,
     update_script_status,
     reset_stuck_scripts,
+    get_rejection_penalty,
+    PENALTY_PER_REJECTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,11 +37,65 @@ STOCK_DIR = ASSETS_DIR / "stock_footage"
 IMAGES_DIR = ASSETS_DIR / "images"
 MUSIC_DIR = ASSETS_DIR / "music"
 VOICEOVER_DIR = ASSETS_DIR / "voiceovers"
+USER_VIDEO_DIR = ASSETS_DIR / "stock_footage" / "user"
+USER_IMAGE_DIR = ASSETS_DIR / "images" / "user"
+
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".webm")
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
 
 def _ensure_dirs():
-    for d in (STOCK_DIR, IMAGES_DIR, MUSIC_DIR, VOICEOVER_DIR):
+    for d in (STOCK_DIR, IMAGES_DIR, MUSIC_DIR, VOICEOVER_DIR, USER_VIDEO_DIR, USER_IMAGE_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+def _download_trend_video(video_id: str, trend_id: int, platform: str, dest_dir: Path) -> Path | None:
+    """Download a trend video (YouTube/TikTok short) with yt-dlp. Returns path on success, None on failure."""
+    if not video_id:
+        return None
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"trend_{trend_id}_{video_id}"
+    for ext in (".mp4", ".webm", ".mkv"):
+        existing = dest_dir / f"{stem}{ext}"
+        if existing.exists():
+            return existing
+
+    if platform == "youtube":
+        url = f"https://www.youtube.com/watch?v={video_id}"
+    elif platform == "tiktok":
+        url = f"https://www.tiktok.com/@placeholder/video/{video_id}"  # yt-dlp can resolve
+    else:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+    out_template = str(dest_dir / f"trend_{trend_id}_{video_id}.%(ext)s")
+    cmd = [
+        "yt-dlp",
+        "-f", "best[height<=1080]/best",
+        "--no-playlist",
+        "--no-warnings",
+        "--quiet",
+        "-o", out_template,
+        url,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, encoding="utf-8")
+        if result.returncode != 0:
+            logger.warning("yt-dlp trend download failed for %s: %s", url[:50], result.stderr[:200] if result.stderr else "unknown")
+            return None
+        stem = f"trend_{trend_id}_{video_id}"
+        for ext in (".mp4", ".webm", ".mkv"):
+            candidate = dest_dir / f"{stem}{ext}"
+            if candidate.exists() and candidate.stat().st_size > 10000:
+                logger.info("Downloaded trend video: %s", candidate.name)
+                return candidate
+        logger.warning("yt-dlp produced no valid file for %s", url[:50])
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("yt-dlp timed out for trend %s", video_id)
+        return None
+    except FileNotFoundError:
+        logger.warning("yt-dlp not found on PATH")
+        return None
 
 
 # --- Pexels API ---
@@ -553,7 +611,7 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
         if w1 in concrete_indicators and w2 not in STOP_WORDS and len(w2) > 2:
             keywords.append(f"{words[i]} {words[i+1]}")
 
-    # Extract standalone concrete nouns (things you can film/photograph)
+    # Extract standalone concrete nouns (objects you can film/photograph)
     visual_nouns = {
         "room", "desk", "building", "house", "school", "classroom", "stage",
         "phone", "camera", "screen", "mirror", "window", "door", "car",
@@ -565,10 +623,39 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
         "dog", "cat", "pet", "game", "controller", "computer", "laptop",
         "office", "kitchen", "food", "coffee", "book", "baby", "child",
         "doctor", "hospital", "garden", "park", "beach", "snow", "cloud",
+        "letter", "box", "uniform", "map", "attic", "submarine", "barracks",
     }
     for w in words:
         if w and w.lower() in visual_nouns:
             keywords.append(w.lower())
+
+    # Extract action verbs (visually filmable actions for stock footage)
+    action_verbs = {
+        "run", "running", "walk", "walking", "jump", "jumping", "sit", "sitting",
+        "stand", "standing", "cry", "crying", "laugh", "laughing", "smile", "smiling",
+        "type", "typing", "write", "writing", "read", "reading", "cook", "cooking",
+        "drive", "driving", "point", "pointing", "wave", "waving", "hold", "holding",
+        "open", "opening", "close", "closing", "look", "looking", "watch", "watching",
+        "listen", "listening", "talk", "talking", "yell", "yelling", "salute", "saluting",
+        "fold", "folding", "push", "pushing", "pull", "pulling", "climb", "climbing",
+        "fall", "falling", "dance", "dancing",
+    }
+    for w in words:
+        wl = w.lower() if w else ""
+        if wl in action_verbs:
+            keywords.append(wl)
+    for i in range(len(words) - 1):
+        w1, w2 = words[i].lower(), words[i + 1].lower()
+        if w1 in action_verbs and w2 not in STOP_WORDS and len(w2) > 2:
+            keywords.append(f"{words[i]} {words[i+1]}")
+
+    # Extract objects from "a/the X" and "verb + object" patterns
+    for i in range(len(words) - 1):
+        w1, w2 = words[i].lower(), words[i + 1].lower()
+        if w1 in ("a", "an", "the", "my", "his", "her") and len(w2) > 2 and w2 not in STOP_WORDS:
+            keywords.append(words[i + 1].lower())
+        if w1 in action_verbs and len(w2) > 2 and w2 not in STOP_WORDS:
+            keywords.append(words[i + 1].lower())
 
     # Add tag-derived terms (cleaned hashtags)
     for tag in tags[:5]:
@@ -585,7 +672,7 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
             seen.add(k_lower)
             unique.append(k)
 
-    return unique[:20]
+    return unique[:25]
 
 
 # Topic modifiers for video/image search (when script inspired by gaming/roblox trends)
@@ -602,6 +689,7 @@ CATEGORY_VISUAL_FALLBACKS = {
     "storytime": ["cozy room aesthetic", "cinematic close up face", "dramatic lighting", "night city lights"],
     "howto": ["hands demonstrating", "step by step tutorial", "notebook tips", "clean workspace"],
     "pov": ["first person perspective", "relatable moment", "phone screen pov", "everyday life"],
+    "reaction": ["news discussion", "commentary background", "debate panel", "social media reaction"],
     "wellness": ["meditation nature", "yoga sunrise", "peaceful garden", "calm water ripples"],
     "wellbeing": ["self care routine", "healthy lifestyle", "nature walk", "morning sunlight"],
     "viral": ["social media trending", "crowd reaction", "neon lights", "fast motion city"],
@@ -654,6 +742,85 @@ def _expand_visual_queries(visual_cues: list[str], title: str, category: str,
     return unique
 
 
+def _load_meta_json(path: Path) -> dict:
+    """Load optional .meta.json alongside a file. Returns {} on missing or error."""
+    meta_path = path.with_name(path.stem + ".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _scan_user_videos() -> list[dict]:
+    """Scan assets/stock_footage/user/, return list of {path, searchable_text, source: 'user'}."""
+    candidates = []
+    if not USER_VIDEO_DIR.exists():
+        return candidates
+    for p in USER_VIDEO_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS:
+            meta = _load_meta_json(p)
+            keywords = meta.get("keywords", [])
+            mood = meta.get("mood", "")
+            searchable = p.stem.lower()
+            if keywords:
+                searchable += " " + " ".join(str(k).lower() for k in keywords)
+            if mood:
+                searchable += " " + str(mood).lower()
+            candidates.append({
+                "path": p,
+                "searchable_text": searchable.strip(),
+                "source": "user",
+                "asset_type": "video",
+            })
+    return candidates
+
+
+def _scan_user_images() -> list[dict]:
+    """Scan assets/images/user/, return list of {path, searchable_text, source: 'user'}."""
+    candidates = []
+    if not USER_IMAGE_DIR.exists():
+        return candidates
+    for p in USER_IMAGE_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS:
+            meta = _load_meta_json(p)
+            keywords = meta.get("keywords", [])
+            mood = meta.get("mood", "")
+            searchable = p.stem.lower()
+            if keywords:
+                searchable += " " + " ".join(str(k).lower() for k in keywords)
+            if mood:
+                searchable += " " + str(mood).lower()
+            candidates.append({
+                "path": p,
+                "searchable_text": searchable.strip(),
+                "source": "user",
+                "asset_type": "image",
+            })
+    return candidates
+
+
+def _score_visual_candidate(
+    candidate: dict,
+    search_queries: list[str],
+    category: str,
+) -> float:
+    """Score a video/image candidate by query matches. Uses CATEGORY_VISUAL_FALLBACKS for mood."""
+    text = (candidate.get("searchable_text") or "").lower()
+    score = 0.0
+    q_set = {q.lower() for q in search_queries if q}
+    for q in q_set:
+        if q in text:
+            score += 0.5
+    fallbacks = CATEGORY_VISUAL_FALLBACKS.get(category, [])
+    for fb in fallbacks:
+        if fb and fb.lower() in text:
+            score += 0.3
+    return score
+
+
 def source_assets_for_script(script: dict) -> bool:
     """Download all required assets for a single script. Returns True if successful.
     Pipeline order: extract keywords from script -> search videos/images -> music -> voiceover.
@@ -702,55 +869,158 @@ def source_assets_for_script(script: dict) -> bool:
 
     videos_per_script = cfg("sourcing.pexels_videos_per_script") or 5
     assets_saved = 0
+    images_saved = 0
     video_providers = cfg("sourcing.video_providers") or ["pexels", "pixabay", "coverr"]
 
-    # Download videos — rotate providers per query for variety
-    for i, cue in enumerate(search_queries):
+    # User-selected override: insert user-picked assets first, in order
+    user_selected = script.get("user_selected_asset_paths")
+    if isinstance(user_selected, str):
+        try:
+            user_selected = json.loads(user_selected)
+        except (json.JSONDecodeError, TypeError):
+            user_selected = []
+    if isinstance(user_selected, list) and user_selected:
+        for item in user_selected:
+            typ = item.get("type")
+            path_str = item.get("path")
+            if typ not in ("video", "image") or not path_str:
+                continue
+            path = Path(path_str)
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            if path.exists():
+                insert_asset(
+                    conn, script_id=script_id, asset_type=typ, source="user_selected",
+                    source_id=None, local_path=str(path.resolve()),
+                )
+                if typ == "video":
+                    assets_saved += 1
+                elif typ == "image":
+                    images_saved += 1
+                logger.info("Script #%d: using user-selected %s %s", script_id, typ, path.name)
+
+    # Reaction: download trend video as first asset
+    if category == "reaction":
+        trend_ids = script.get("trend_source_ids")
+        if isinstance(trend_ids, str):
+            try:
+                trend_ids = json.loads(trend_ids)
+            except (json.JSONDecodeError, TypeError):
+                trend_ids = []
+        if isinstance(trend_ids, list) and trend_ids:
+            trends = get_trends_by_ids(conn, [trend_ids[0]])
+            if trends:
+                t = trends[0]
+                vid = t.get("video_id")
+                plat = t.get("platform", "youtube")
+                tid = t.get("id")
+                if vid and tid:
+                    path = _download_trend_video(vid, tid, plat, STOCK_DIR)
+                    if path:
+                        insert_asset(
+                            conn, script_id=script_id, asset_type="video", source="trend",
+                            source_id=vid, local_path=str(path), search_query="trend_clip",
+                        )
+                        assets_saved += 1
+                    else:
+                        logger.warning("Script #%d: trend video download failed, using stock B-roll only", script_id)
+                else:
+                    logger.warning("Script #%d: trend missing video_id or id", script_id)
+            else:
+                logger.warning("Script #%d: trend not found in DB, using stock B-roll only", script_id)
+
+    # Collect video candidates: user + scraped, score, pick best
+    user_videos = _scan_user_videos()
+    scraped_videos = []
+    seen_scraped = set()
+    for i, cue in enumerate(search_queries[:15]):
+        prov = video_providers[i % len(video_providers)] if video_providers else "pexels"
+        if prov == "pexels":
+            for item in search_pexels_videos(cue, count=3):
+                kid = ("pexels", str(item.get("id", "")))
+                if kid not in seen_scraped:
+                    seen_scraped.add(kid)
+                    scraped_videos.append({"source": "pexels", "raw": item, "searchable_text": cue})
+        elif prov == "pixabay":
+            for item in search_pixabay_videos(cue, count=3):
+                kid = ("pixabay", str(item.get("id", "")))
+                if kid not in seen_scraped:
+                    seen_scraped.add(kid)
+                    scraped_videos.append({"source": "pixabay", "raw": item, "searchable_text": cue})
+        elif prov == "coverr":
+            for item in search_coverr_videos(cue, count=3):
+                kid = ("coverr", str(item.get("id", "")))
+                if kid not in seen_scraped:
+                    seen_scraped.add(kid)
+                    scraped_videos.append({"source": "coverr", "raw": item, "searchable_text": cue})
+
+    all_video_candidates = user_videos + scraped_videos
+    for c in all_video_candidates:
+        c["_score"] = _score_visual_candidate(c, search_queries, category)
+    # Apply rejection penalty
+    for c in all_video_candidates:
+        if c.get("source") == "user":
+            p = c.get("path")
+            fname = Path(p).name if p else ""
+            size_bytes, mtime_real = None, None
+            try:
+                if p:
+                    st = Path(p).stat()
+                    size_bytes, mtime_real = st.st_size, st.st_mtime
+            except (OSError, TypeError):
+                pass
+            penalty = get_rejection_penalty(conn, fname, "video", category, "Poor visual quality", size_bytes=size_bytes, mtime_real=mtime_real)
+        else:
+            raw = c.get("raw", {})
+            fname = f"{c['source']}_{raw.get('id', '')}.mp4"
+            penalty = get_rejection_penalty(conn, fname, "video", category, "Poor visual quality")
+        c["_score"] -= penalty * PENALTY_PER_REJECTION
+    all_video_candidates.sort(key=lambda x: x["_score"], reverse=True)
+
+    for c in all_video_candidates:
         if assets_saved >= videos_per_script:
             break
-        provider = video_providers[i % len(video_providers)] if video_providers else "pexels"
-
-        if provider == "pexels":
-            items = search_pexels_videos(cue, count=3)
-            for item in items[:2]:
+        if c.get("source") == "user":
+            path = c.get("path")
+            if path and path.exists():
+                insert_asset(
+                    conn, script_id=script_id, asset_type="video", source="user",
+                    source_id=None, local_path=str(path.resolve()), search_query="user_asset",
+                )
+                assets_saved += 1
+                logger.info("Script #%d: using user video (score %.1f) %s", script_id, c["_score"], path.name)
+        else:
+            prov = c["source"]
+            item = c["raw"]
+            cue = c.get("searchable_text", "")
+            path = None
+            if prov == "pexels":
                 path = download_pexels_video(item, STOCK_DIR)
-                if path:
+            elif prov == "pixabay":
+                path = download_pixabay_video(item, STOCK_DIR)
+            elif prov == "coverr":
+                path = download_coverr_video(item, STOCK_DIR)
+            if path:
+                if prov == "pexels":
                     insert_asset(
                         conn, script_id=script_id, asset_type="video", source="pexels",
                         source_id=str(item.get("id")), source_url=item.get("url"),
                         local_path=str(path), search_query=cue,
                         duration=item.get("duration"), width=item.get("width"), height=item.get("height"),
                     )
-                    assets_saved += 1
-                    if assets_saved >= videos_per_script:
-                        break
-        elif provider == "pixabay":
-            items = search_pixabay_videos(cue, count=3)
-            for item in items[:2]:
-                path = download_pixabay_video(item, STOCK_DIR)
-                if path:
+                elif prov == "pixabay":
                     insert_asset(
                         conn, script_id=script_id, asset_type="video", source="pixabay",
                         source_id=str(item.get("id")), local_path=str(path), search_query=cue,
                     )
-                    assets_saved += 1
-                    if assets_saved >= videos_per_script:
-                        break
-        elif provider == "coverr":
-            items = search_coverr_videos(cue, count=3)
-            for item in items[:2]:
-                path = download_coverr_video(item, STOCK_DIR)
-                if path:
+                elif prov == "coverr":
                     insert_asset(
                         conn, script_id=script_id, asset_type="video", source="coverr",
                         source_id=str(item.get("id")), local_path=str(path), search_query=cue,
                         duration=item.get("duration"), width=item.get("max_width"), height=item.get("max_height"),
                     )
-                    assets_saved += 1
-                    if assets_saved >= videos_per_script:
-                        break
+                assets_saved += 1
 
-    # Fallback: if we didn't get enough videos, try other providers
     if assets_saved < 3:
         for cue in search_queries[:6]:
             if assets_saved >= videos_per_script:
@@ -759,10 +1029,13 @@ def source_assets_for_script(script: dict) -> bool:
                 if prov not in video_providers:
                     continue
                 if prov == "pexels":
-                    items = search_pexels_videos(cue, count=2)
-                    for item in items[:1]:
+                    for item in search_pexels_videos(cue, count=2):
+                        kid = ("pexels", str(item.get("id", "")))
+                        if kid in seen_scraped:
+                            continue
                         path = download_pexels_video(item, STOCK_DIR)
                         if path:
+                            seen_scraped.add(kid)
                             insert_asset(conn, script_id=script_id, asset_type="video", source="pexels",
                                 source_id=str(item.get("id")), source_url=item.get("url"),
                                 local_path=str(path), search_query=cue,
@@ -770,19 +1043,25 @@ def source_assets_for_script(script: dict) -> bool:
                             assets_saved += 1
                             break
                 elif prov == "pixabay":
-                    items = search_pixabay_videos(cue, count=2)
-                    for item in items[:1]:
+                    for item in search_pixabay_videos(cue, count=2):
+                        kid = ("pixabay", str(item.get("id", "")))
+                        if kid in seen_scraped:
+                            continue
                         path = download_pixabay_video(item, STOCK_DIR)
                         if path:
+                            seen_scraped.add(kid)
                             insert_asset(conn, script_id=script_id, asset_type="video", source="pixabay",
                                 source_id=str(item.get("id")), local_path=str(path), search_query=cue)
                             assets_saved += 1
                             break
                 elif prov == "coverr":
-                    items = search_coverr_videos(cue, count=2)
-                    for item in items[:1]:
+                    for item in search_coverr_videos(cue, count=2):
+                        kid = ("coverr", str(item.get("id", "")))
+                        if kid in seen_scraped:
+                            continue
                         path = download_coverr_video(item, STOCK_DIR)
                         if path:
+                            seen_scraped.add(kid)
                             insert_asset(conn, script_id=script_id, asset_type="video", source="coverr",
                                 source_id=str(item.get("id")), local_path=str(path), search_query=cue,
                                 duration=item.get("duration"), width=item.get("max_width"), height=item.get("max_height"))
@@ -791,68 +1070,105 @@ def source_assets_for_script(script: dict) -> bool:
                 if assets_saved >= videos_per_script:
                     break
 
-    # Download images — rotate providers for variety
-    images_saved = 0
+    # Collect image candidates: user + scraped, score, pick best
+    user_images = _scan_user_images()
+    scraped_images = []
+    seen_img = set()
     image_providers = cfg("sourcing.image_providers") or ["pexels", "pixabay", "unsplash", "openverse"]
-    for i, q in enumerate(search_queries[:8]):
+    for i, q in enumerate(search_queries[:10]):
+        prov = image_providers[i % len(image_providers)] if image_providers else "pexels"
+        items = []
+        if prov == "pexels":
+            items = search_pexels_images(q, count=3)
+        elif prov == "pixabay":
+            items = search_pixabay_images(q, count=3)
+        elif prov == "unsplash":
+            items = search_unsplash_images(q, count=3)
+        elif prov == "openverse":
+            items = search_openverse_images(q, count=3)
+        for item in items[:2]:
+            kid = (prov, str(item.get("id", "")))
+            if kid not in seen_img:
+                seen_img.add(kid)
+                scraped_images.append({"source": prov, "raw": item, "searchable_text": q})
+
+    all_image_candidates = user_images + scraped_images
+    for c in all_image_candidates:
+        c["_score"] = _score_visual_candidate(c, search_queries, category)
+    # Apply rejection penalty
+    for c in all_image_candidates:
+        if c.get("source") == "user":
+            p = c.get("path")
+            fname = Path(p).name if p else ""
+            size_bytes, mtime_real = None, None
+            try:
+                if p:
+                    st = Path(p).stat()
+                    size_bytes, mtime_real = st.st_size, st.st_mtime
+            except (OSError, TypeError):
+                pass
+            penalty = get_rejection_penalty(conn, fname, "image", category, "Poor visual quality", size_bytes=size_bytes, mtime_real=mtime_real)
+        else:
+            raw = c.get("raw", {})
+            fname = f"{c['source']}_{raw.get('id', '')}.jpg"
+            penalty = get_rejection_penalty(conn, fname, "image", category, "Poor visual quality")
+        c["_score"] -= penalty * PENALTY_PER_REJECTION
+    all_image_candidates.sort(key=lambda x: x["_score"], reverse=True)
+
+    for c in all_image_candidates:
         if images_saved >= 3:
             break
-        provider = image_providers[i % len(image_providers)] if image_providers else "pexels"
-
-        if provider == "pexels":
-            items = search_pexels_images(q, count=3)
-            for item in items[:2]:
+        if c.get("source") == "user":
+            path = c.get("path")
+            if path and path.exists():
+                insert_asset(
+                    conn, script_id=script_id, asset_type="image", source="user",
+                    source_id=None, local_path=str(path.resolve()), search_query="user_asset",
+                )
+                images_saved += 1
+        else:
+            prov = c["source"]
+            item = c["raw"]
+            q = c.get("searchable_text", "")
+            path = None
+            if prov == "pexels":
                 path = download_pexels_image(item, IMAGES_DIR)
-                if path:
+            elif prov == "pixabay":
+                path = download_pixabay_image(item, IMAGES_DIR)
+            elif prov == "unsplash":
+                path = download_unsplash_image(item, IMAGES_DIR)
+            elif prov == "openverse":
+                path = download_openverse_image(item, IMAGES_DIR)
+            if path:
+                if prov == "pexels":
                     insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
                         source_id=str(item.get("id")), source_url=item.get("url"),
                         local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
-                    images_saved += 1
-                    if images_saved >= 3:
-                        break
-        elif provider == "pixabay":
-            items = search_pixabay_images(q, count=3)
-            for item in items[:2]:
-                path = download_pixabay_image(item, IMAGES_DIR)
-                if path:
+                elif prov == "pixabay":
                     insert_asset(conn, script_id=script_id, asset_type="image", source="pixabay",
                         source_id=str(item.get("id")), local_path=str(path), search_query=q,
                         width=item.get("webformatWidth"), height=item.get("webformatHeight"))
-                    images_saved += 1
-                    if images_saved >= 3:
-                        break
-        elif provider == "unsplash":
-            items = search_unsplash_images(q, count=3)
-            for item in items[:2]:
-                path = download_unsplash_image(item, IMAGES_DIR)
-                if path:
+                elif prov == "unsplash":
                     insert_asset(conn, script_id=script_id, asset_type="image", source="unsplash",
                         source_id=str(item.get("id")), source_url=item.get("urls", {}).get("full"),
                         local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
-                    images_saved += 1
-                    if images_saved >= 3:
-                        break
-        elif provider == "openverse":
-            items = search_openverse_images(q, count=3)
-            for item in items[:2]:
-                path = download_openverse_image(item, IMAGES_DIR)
-                if path:
+                elif prov == "openverse":
                     insert_asset(conn, script_id=script_id, asset_type="image", source="openverse",
                         source_id=str(item.get("id")), source_url=item.get("foreign_landing_url"),
                         local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
-                    images_saved += 1
-                    if images_saved >= 3:
-                        break
+                images_saved += 1
 
-    # Fallback images from Pexels if still needed
     if images_saved < 3:
         for q in search_queries[:4]:
             if images_saved >= 3:
                 break
-            photos = search_pexels_images(q, count=2)
-            for photo in photos[:1]:
+            for photo in search_pexels_images(q, count=2)[:1]:
+                kid = ("pexels", str(photo.get("id", "")))
+                if kid in seen_img:
+                    continue
                 path = download_pexels_image(photo, IMAGES_DIR)
                 if path:
+                    seen_img.add(kid)
                     insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
                         source_id=str(photo.get("id")), source_url=photo.get("url"),
                         local_path=str(path), search_query=q, width=photo.get("width"), height=photo.get("height"))
@@ -860,9 +1176,12 @@ def source_assets_for_script(script: dict) -> bool:
                     if images_saved >= 3:
                         break
 
-    # Step 4: Source background music (with topic augmentation when applicable)
+    # Step 4: Source background music (with script keywords and topic augmentation)
     from agents.music_scraper import source_music_for_script
-    source_music_for_script(script_id, category, tags=script_tags, trend_topic=trend_topic)
+    source_music_for_script(
+        script_id, category, tags=script_tags, trend_topic=trend_topic,
+        script_keywords=script_keywords,
+    )
 
     # Step 5: Generate voiceover with word-boundary metadata for caption sync.
     full_text = script_body.strip()

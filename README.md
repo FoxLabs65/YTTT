@@ -147,7 +147,11 @@ python -c "import moviepy, anthropic, edge_tts, streamlit, yt_dlp; print('All im
 
 You should see `All imports OK`. If any import fails, re-run `pip install -r requirements.txt`.
 
-### Step 4: Add yt-dlp to your PATH (if needed)
+### Step 4: Configure
+
+See the [Configuration](#configuration) section. You can either use the **Setup** page in the dashboard (recommended) or manually copy `config\settings.example.yaml` to `config\settings.yaml` and edit it.
+
+### Step 5: Add yt-dlp to your PATH (if needed)
 
 If `yt-dlp --version` gives a "not recognized" error, Python's Scripts folder is not on your PATH. Run:
 
@@ -159,60 +163,59 @@ To make this permanent, add that Scripts folder to your system PATH via **Settin
 
 > Replace `Python314` with your actual Python version folder (e.g. `Python311`, `Python312`).
 
+### Step 6: Run setup to verify
+
+```
+python main.py --setup
+```
+
+This initializes the database and checks that all API keys and tools are configured correctly.
+
 ---
 
 ## Configuration
 
-### Step 1: Create your settings file
+Configuration can be managed in two ways: **via the Setup page in the dashboard (recommended)** or by editing `config/settings.yaml` directly.
+
+### Option A: Setup Page (Recommended)
+
+1. Start the dashboard (see [Reviewing and Approving Videos](#reviewing-and-approving-videos))
+2. Go to **Settings** → **Setup**
+3. Configure API keys, voiceover voices, music moods, video composition, upload defaults, and more
+4. Use **Test Connections** to verify each API key
+5. Click **Save Configuration**
+
+The Setup page creates `config/settings.yaml` from the example template if it doesn't exist. All changes are saved to `config/settings.yaml` and never transmitted.
+
+### Option B: Manual Configuration
+
+If you prefer to edit the config file directly:
+
+**Step 1: Create your settings file**
 
 ```
 copy config\settings.example.yaml config\settings.yaml
 ```
 
-### Step 2: Edit `config\settings.yaml`
+**Step 2: Edit `config\settings.yaml`**
 
-Open `config\settings.yaml` in any text editor and replace the placeholder values with your actual keys:
+Replace placeholder values with your actual keys. See `config/settings.example.yaml` for the full structure and comments.
 
-```yaml
-# Paste your real keys here (keep the quotes):
-pexels_api_key: "abc123..."
-pixabay_api_key: "xyz789..."
-anthropic_api_key: "sk-ant-..."
-```
+**Step 3: Place your YouTube OAuth file**
 
-### Step 3: Place your YouTube OAuth file
-
-Copy the `client_secret.json` file you downloaded from Google Cloud Console into:
+Copy the `client_secret.json` file from Google Cloud Console into:
 
 ```
 config\client_secret.json
 ```
 
-### Step 4: Configure TikTok (if approved)
+**Step 4: Configure TikTok (if approved)**
 
-If you have TikTok developer access, update these fields in `settings.yaml`:
+Add `client_key` and `client_secret` under `tiktok` in settings.yaml, then use **Setup → Connect TikTok** in the dashboard to complete OAuth. Set `enabled: true` once authorized.
 
-```yaml
-tiktok:
-  client_key: "your_actual_key"
-  client_secret: "your_actual_secret"
-  enabled: true
-```
+### Verify Configuration
 
-Otherwise leave `enabled: false` -- the pipeline will skip TikTok uploads.
-
-### Step 5: (Optional) Set your channel watermark
-
-In `settings.yaml`, set your channel name to show a small watermark on videos:
-
-```yaml
-composer:
-  watermark_text: "YourChannelName"
-```
-
-Leave it empty (`""`) for no watermark.
-
-### Step 6: Run setup to verify everything
+Run the setup check to verify everything is configured:
 
 ```
 python main.py --setup
@@ -234,7 +237,7 @@ Checking configuration...
 Setup complete.
 ```
 
-If any service shows `NOT CONFIGURED`, go back and check that key in `settings.yaml`.
+If any service shows `NOT CONFIGURED`, add the key via **Setup** in the dashboard or edit `settings.yaml`.
 
 ---
 
@@ -270,7 +273,7 @@ Shows counts of trends, scripts, videos pending review, approved, uploaded, and 
 python main.py --run --category motivational --count 3
 ```
 
-Valid categories: `motivational`, `funny`, `meme`, `news`, `storytime`, `howto`, `pov`.
+Valid categories: `motivational`, `funny`, `meme`, `news`, `storytime`, `howto`, `pov`, `reaction`.
 
 ---
 
@@ -281,25 +284,31 @@ Before any video is uploaded, you review it in a local web dashboard.
 ### Step 1: Start the dashboard
 
 ```
-streamlit run review/app.py
+streamlit run ui/app.py
 ```
 
 ### Step 2: Open in your browser
 
 Go to http://localhost:8501
 
-### Step 3: Review each video
+### Step 3: Use the dashboard
 
-For each pending video you will see:
-- **Video player** -- watch the full Short
-- **Title, description, tags** -- all editable before approval
-- **TikTok caption** -- separate editable field optimized for TikTok
-- **Approve** button -- moves the video to the upload queue
-- **Reject** button -- archives the video with an optional reason
+The dashboard includes:
+- **Content Studio** — Create content, run the pipeline, view live logs
+- **Review** — Watch pending videos, edit title/description/tags, approve or reject
+- **Settings → Setup** — Configure API keys, voices, music moods, video composition, upload defaults
+- **Settings → Scheduler** — Configure automated daily runs
+
+For each pending video in Review you will see:
+- **Video player** — watch the full Short
+- **Title, description, tags** — all editable before approval
+- **TikTok caption** — separate editable field optimized for TikTok
+- **Approve** — moves the video to the upload queue
+- **Reject** — archives the video with an optional reason
 
 ### Step 4: Stop the dashboard
 
-Press `Ctrl+C` in the terminal when done reviewing.
+Press `Ctrl+C` in the terminal when done.
 
 ---
 
@@ -446,8 +455,12 @@ yttt/
   models/
     database.py                     SQLite schema and CRUD operations
     config.py                       YAML config loader
-  review/
-    app.py                          Streamlit review dashboard
+  ui/
+    app.py                          Streamlit dashboard (Content Studio, Review, Setup)
+    pages/                          Dashboard pages
+      content_studio.py              Run pipeline, create content, live logs
+      review.py                     Approve/reject pending videos
+      setup.py                      Configure API keys, voices, composition, uploads
   assets/                           (gitignored)
     stock_footage/                  Downloaded B-roll video clips
     images/                         Downloaded background images
@@ -552,7 +565,7 @@ Make sure streamlit is installed and on your PATH:
 
 ```
 pip install streamlit
-streamlit run review/app.py
+streamlit run ui/app.py
 ```
 
 If port 8501 is busy, streamlit will try 8502, 8503, etc. Check the terminal output for the actual URL.
@@ -577,14 +590,14 @@ Agent-specific logs (when run standalone): `discovery.log`, `ideation.log`, `sou
 ```
 FIRST TIME SETUP:
   pip install -r requirements.txt
-  copy config\settings.example.yaml config\settings.yaml
-  (edit settings.yaml with your API keys)
+  copy config\settings.example.yaml config\settings.yaml   (or use Setup page in dashboard)
+  (edit settings.yaml with API keys, or configure via Settings → Setup)
   (place client_secret.json in config\)
   python main.py --setup
 
 DAILY WORKFLOW:
   python main.py --run              Generate new videos
-  streamlit run review/app.py       Review and approve
+  streamlit run ui/app.py           Dashboard: review, approve, configure
   python main.py --upload           Upload approved videos
 
 STATUS / DIAGNOSTICS:

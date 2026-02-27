@@ -1,7 +1,10 @@
 # ============================================================
 # Trending Content Shorts Engine - Configuration
 # ============================================================
-# Copy this file to settings.yaml and fill in your API keys.
+# You can configure this in two ways:
+#   1. Setup page (recommended): Start the dashboard (streamlit run ui/app.py),
+#      go to Settings → Setup, edit values, and click Save Configuration.
+#   2. Manual: Copy this file to settings.yaml and edit it directly.
 # settings.yaml is gitignored and will never be committed.
 # ============================================================
 
@@ -70,6 +73,7 @@ ideation:
     - storytime
     - howto
     - pov
+    - reaction
 
 # --- Asset Sourcing ---
 sourcing:
@@ -93,6 +97,7 @@ sourcing:
     storytime: "chill"
     howto: "chill"
     pov: "quirky"
+    reaction: "dramatic"
   # Per-category voice (string) or list for random variety within category
   voiceover_voices:
     motivational: "en-US-AndrewMultilingualNeural"
@@ -102,6 +107,7 @@ sourcing:
     storytime: "en-US-AvaMultilingualNeural"
     howto: "en-US-AndrewMultilingualNeural"
     pov: "en-US-BrianMultilingualNeural"
+    reaction: "en-US-AndrewMultilingualNeural"
   # Optional: pool of voices to rotate through for ALL scripts (overrides per-category)
   # When set, each script gets a random voice from this list for variety
   voiceover_voice_pool: []  # e.g. ["en-US-AndrewMultilingualNeural", "en-US-AvaMultilingualNeural", "en-US-BrianMultilingualNeural", "en-GB-SoniaNeural"]

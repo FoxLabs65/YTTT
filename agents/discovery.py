@@ -82,6 +82,7 @@ _CATEGORY_KEYWORDS = {
     "storytime": ("storytime", "story", "storytelling", "anecdote", "happened"),
     "howto": ("howto", "how to", "tutorial", "tips", "did you know", "life hack", "guide", "learn"),
     "pov": ("pov", "point of view", "relatable", "the moment you", "when you"),
+    "reaction": ("reaction", "commentary", "breakdown", "discussion", "hot take", "analysis"),
     "roblox": ("roblox", "blox", "brookhaven", "adopt me", "bloxburg"),
     "gaming": ("gaming", "game", "games", "gamer", "playthrough", "stream", "twitch", "esports", "fortnite", "minecraft"),
 }

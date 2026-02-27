@@ -10,12 +10,14 @@ Warns when categories in ideation.categories are missing from:
 """
 
 import logging
+import shutil
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 TEMPLATE_DIR = PROJECT_ROOT / "config" / "templates" / "scripts"
+TEMPLATE_DEFAULTS_DIR = PROJECT_ROOT / "config" / "templates" / "scripts_defaults"
 
 
 def validate_category_config() -> list[str]:
@@ -87,3 +89,13 @@ def validate_category_config() -> list[str]:
 def run_startup_check() -> list[str]:
     """Run validation and return any warnings. Safe to call at startup."""
     return validate_category_config()
+
+
+def revert_template_to_default(category: str) -> bool:
+    """Copy from scripts_defaults/ to scripts/. Returns True on success."""
+    default_path = TEMPLATE_DEFAULTS_DIR / f"{category}.txt"
+    target_path = TEMPLATE_DIR / f"{category}.txt"
+    if default_path.exists():
+        shutil.copy(default_path, target_path)
+        return True
+    return False

@@ -2,6 +2,25 @@
 
 All notable changes to the Shorts Engine are documented here.
 
+## [1.7.0] - 2026-02-24
+
+### Added
+- **Rejection feedback learning:** Rejected videos now improve future asset selection
+  - **Phase 1:** Captures asset filenames (music, video, image) before cleanup when a video is rejected
+  - **Phase 2:** Negative scoring — rejected assets receive a penalty (not excluded) so they rank lower when sourcing again
+  - User/local assets: match by filename + size + mtime to avoid false penalties when files are replaced
+  - Scraped assets: match by filename or (source, source_id)
+- **Rejection insights:** Setup page shows script-related rejection counts by category ("Script not engaging", "Inappropriate content")
+- **Rejection-guided ideation:** Optional runtime prompt injection — when generating scripts, prepends guidance from past rejections (config: `ideation.rejection_guidance`, default true)
+- **Template validation:** Ideation checks for required placeholders (`{trending_topics}`, `{n}`, `{category}`); uses fallback if missing
+- **Script template revert:** Setup page "Script Templates" expander with "Restore default" per category — copies from `config/templates/scripts_defaults/`
+
+### Changed
+- Database: New tables `rejection_feedback` and `rejection_assets`; new functions `insert_rejection_feedback`, `insert_rejection_assets`, `get_rejection_penalty`, `get_rejection_insights_by_category`, `get_rejection_guidance_for_category` in `models/database.py`
+- **Documentation:** README and `settings.example.yaml` updated for Setup page as primary configuration method; dashboard launch path updated from `review/app.py` to `ui/app.py`; project structure and Quick Reference updated
+
+---
+
 ## [1.6.0] - 2026-02-26
 
 ### Added

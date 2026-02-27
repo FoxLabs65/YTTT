@@ -19,6 +19,7 @@ from models.database import (
     get_top_trends,
     get_top_tags,
     get_rejected_trend_ids,
+    get_rejection_guidance_for_category,
     insert_script,
 )
 
@@ -27,11 +28,11 @@ logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "config" / "templates" / "scripts"
 
 
-def _load_template(category: str) -> str:
-    path = TEMPLATE_DIR / f"{category}.txt"
-    if path.exists():
-        return path.read_text(encoding="utf-8")
-    # Fallback generic prompt
+REQUIRED_PLACEHOLDERS = ("{trending_topics}", "{n}", "{category}")
+
+
+def _fallback_generic_prompt() -> str:
+    """Return the built-in fallback prompt when template is missing or invalid."""
     return """You are a viral short-form content writer.
 
 Given these trending topics on YouTube/TikTok:
@@ -61,6 +62,18 @@ Return ONLY a JSON array. Each element must have these exact keys:
 - "visual_cues": array of search terms for stock footage
 - "estimated_duration_seconds": integer between 15 and 45
 """
+
+
+def _load_template(category: str) -> str:
+    path = TEMPLATE_DIR / f"{category}.txt"
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+        for ph in REQUIRED_PLACEHOLDERS:
+            if ph not in content:
+                logger.warning("Template %s missing placeholder %s — using fallback", path, ph)
+                return _fallback_generic_prompt()
+        return content
+    return _fallback_generic_prompt()
 
 
 def _format_trends_for_prompt(trends: list[dict], tags: list[dict]) -> str:
@@ -187,6 +200,13 @@ def generate_scripts(
         .replace("{n}", str(count))
         .replace("{category}", category)
     )
+    # Prepend rejection guidance if enabled
+    if cfg("ideation.rejection_guidance", True):
+        conn = get_connection()
+        guidance = get_rejection_guidance_for_category(conn, category)
+        conn.close()
+        if guidance:
+            prompt = f"REJECTION FEEDBACK: {guidance}\n\n{prompt}"
 
     logger.info("Generating %d %s scripts...", count, category)
     content = _call_llm(prompt)
@@ -218,7 +238,10 @@ def generate_scripts(
         )
         script["id"] = script_id
         saved.append(script)
-        logger.info("Saved script #%d: %s", script_id, script.get("title", ""))
+        title = script.get("title", "")
+        # Sanitize for logging: Windows cp1252 can't encode emojis; avoid UnicodeEncodeError
+        title_safe = title.encode("ascii", "replace").decode("ascii") if title else ""
+        logger.info("Saved script #%d: %s", script_id, title_safe)
 
     conn.close()
     return saved

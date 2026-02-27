@@ -372,6 +372,47 @@ These would require custom integration. Edge-TTS is free and works out of the bo
         val = st.toggle("Ideation Bonus Retry", value=pipeline.get("ideation_bonus_retry", True), key="cfg_bonus")
         pipeline["ideation_bonus_retry"] = val
 
+    # ── Rejection Insights ─────────────────────────────────────
+    with st.expander("Rejection Insights"):
+        st.caption("Script-related rejection counts by category. Consider updating templates or enabling rejection-guided ideation.")
+        try:
+            from models.database import get_connection, get_rejection_insights_by_category
+
+            conn = get_connection()
+            insights = get_rejection_insights_by_category(conn)
+            conn.close()
+            if insights:
+                for cat, items in sorted(insights.items()):
+                    parts = [f"{r} ({c})" for r, c in items]
+                    st.text(f"{cat}: {', '.join(parts)}")
+            else:
+                st.info("No script-related rejections recorded yet.")
+        except Exception as e:
+            st.caption(f"Could not load insights: {e}")
+
+    # ── Script Templates ────────────────────────────────────────
+    with st.expander("Script Templates"):
+        st.caption("Restore default templates if you've edited them and want to revert.")
+        try:
+            from config.validation import TEMPLATE_DIR, TEMPLATE_DEFAULTS_DIR, revert_template_to_default
+
+            templates = sorted(p.stem for p in TEMPLATE_DIR.glob("*.txt"))
+            for cat in templates:
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.text(f"{cat}.txt")
+                with col2:
+                    if st.button("Restore default", key=f"revert_{cat}"):
+                        if revert_template_to_default(cat):
+                            st.toast(f"Restored {cat}.txt from default")
+                            st.rerun()
+                        else:
+                            st.error(f"No default found for {cat}")
+            if not templates:
+                st.info("No templates found in config/templates/scripts/")
+        except Exception as e:
+            st.caption(f"Could not load templates: {e}")
+
     # ── Save Button ─────────────────────────────────────────────
     st.divider()
     col1, col2 = st.columns([1, 4])

@@ -169,8 +169,8 @@ def render():
 
     conn.close()
 
-    # Auto-refresh every 2s when any task is running (must be last so page renders first)
-    @st.fragment(run_every=2)
+    # Auto-refresh every 5s when any task is running (must be last so page renders first)
+    @st.fragment(run_every=5)
     def _dashboard_refresh():
         r = get_runner()
         if r.is_running:

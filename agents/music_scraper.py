@@ -21,7 +21,7 @@ from pathlib import Path
 import requests as http_requests
 
 from models.config import get as cfg
-from models.database import get_connection, insert_asset
+from models.database import get_connection, insert_asset, get_rejection_penalty, PENALTY_PER_REJECTION
 
 # Topic modifiers for music search (when script inspired by gaming/roblox trends)
 TOPIC_MUSIC_MODIFIERS = {
@@ -131,11 +131,163 @@ CATEGORY_MUSIC_MAP = {
         "freesound_tags": ["quirky", "relatable", "lo-fi", "electronic", "playful", "trendy"],
         "mood": "quirky",
     },
+    "reaction": {
+        "queries": [
+            "no copyright reaction commentary background",
+            "royalty free discussion debate music",
+            "neutral documentary background music no copyright",
+            "thoughtful analysis music royalty free",
+            "balanced commentary background no copyright",
+            "news discussion music free",
+        ],
+        "freesound_tags": ["documentary", "neutral", "discussion", "corporate", "thoughtful", "ambient"],
+        "mood": "dramatic",
+    },
 }
 
 MIN_DURATION = 20
 MAX_DURATION = 180
 _YT_DLP = "yt-dlp"
+
+
+def _build_music_queries(
+    category: str,
+    script_keywords: list[str] | None = None,
+    trend_topic: str | None = None,
+) -> tuple[list[str], list[str], str]:
+    """Build search queries from category, script keywords, and trend topic.
+    Returns (youtube/openverse_queries, freesound_tags, mood).
+    """
+    music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
+    base_queries = list(music_config["queries"])
+    freesound_tags = list(music_config.get("freesound_tags", []))
+    mood = music_config["mood"]
+
+    # Add script keywords as granular search terms (like image/video search)
+    if script_keywords:
+        kw_queries = [f"{kw} {mood} music no copyright" for kw in script_keywords[:6]]
+        base_queries = kw_queries + base_queries
+        freesound_tags = list(script_keywords[:4]) + freesound_tags
+
+    if trend_topic and trend_topic in TOPIC_MUSIC_MODIFIERS:
+        modifiers = TOPIC_MUSIC_MODIFIERS[trend_topic]
+        augmented = [f"{q} {mod}" for q in base_queries[:2] for mod in modifiers[:1]]
+        base_queries = augmented + base_queries
+        freesound_tags = modifiers + freesound_tags
+
+    return base_queries, freesound_tags, mood
+
+
+def _normalize_candidate(entry: dict, source: str) -> dict | None:
+    """Convert raw API result to a unified candidate for scoring."""
+    if source == "youtube":
+        duration = entry.get("duration") or 0
+        if duration < MIN_DURATION or duration > MAX_DURATION:
+            return None
+        title = entry.get("title", "")
+        video_id = entry.get("id", "")
+        url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
+        return {
+            "source": "youtube",
+            "title": title,
+            "searchable_text": title.lower(),
+            "duration": duration,
+            "raw": entry,
+            "url_or_id": url,
+        }
+    if source == "freesound":
+        tags = entry.get("tags", [])
+        name = entry.get("name", "")
+        searchable = f"{name} {' '.join(tags)}".lower()
+        return {
+            "source": "freesound",
+            "title": name,
+            "searchable_text": searchable,
+            "duration": entry.get("duration", 0),
+            "raw": entry,
+            "url_or_id": str(entry.get("id", "")),
+        }
+    if source == "openverse":
+        dur_raw = entry.get("duration") or 0
+        duration = dur_raw / 1000 if dur_raw > 1000 else dur_raw
+        if duration < MIN_DURATION or duration > MAX_DURATION:
+            return None
+        title = entry.get("title", "")
+        genres = entry.get("genres", []) or []
+        tags = entry.get("tags", []) or []
+        tag_names = [t.get("name", t) if isinstance(t, dict) else t for t in tags]
+        searchable = f"{title} {' '.join(str(g) for g in genres)} {' '.join(str(t) for t in tag_names)}".lower()
+        return {
+            "source": "openverse",
+            "title": title,
+            "searchable_text": searchable,
+            "duration": duration,
+            "raw": entry,
+            "url_or_id": str(entry.get("id", "")),
+        }
+    return None
+
+
+def _load_music_meta(path: Path) -> dict:
+    """Load optional .meta.json alongside a music file. Returns {} on missing or error."""
+    meta_path = path.with_name(path.stem + ".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _local_path_to_candidate(path: Path) -> dict:
+    """Convert a local file path to the same candidate format as online for unified scoring."""
+    stem = path.stem.lower()
+    searchable = stem
+    meta = _load_music_meta(path)
+    if meta:
+        keywords = meta.get("keywords", [])
+        mood = meta.get("mood", "")
+        if keywords:
+            searchable += " " + " ".join(str(k).lower() for k in keywords)
+        if mood:
+            searchable += " " + str(mood).lower()
+    return {
+        "source": "local",
+        "title": path.name,
+        "searchable_text": searchable.strip(),
+        "path": path,
+        "raw": path,
+    }
+
+
+def _score_music_candidate(
+    candidate: dict,
+    script_keywords: list[str],
+    category_config: dict,
+) -> float:
+    """Score a candidate by keyword matches and mood relevance."""
+    score = 0.0
+    text = candidate.get("searchable_text", "")
+    mood = category_config.get("mood", "").lower()
+
+    # Base score for mood match in title/tags
+    if mood and mood in text:
+        score += 1.0
+
+    # Script keyword matches (granular relevance)
+    kw_set = {k.lower() for k in script_keywords}
+    for kw in kw_set:
+        if kw in text:
+            score += 0.5
+
+    # Category freesound tags match
+    fs_tags = category_config.get("freesound_tags", [])
+    for tag in fs_tags:
+        if tag.lower() in text:
+            score += 0.2
+
+    return score
 
 
 def _ensure_dirs():
@@ -233,7 +385,8 @@ def _search_openverse_music(query: str, mood: str, max_results: int = 5) -> list
         results = data.get("results", [])
         out = []
         for r in results:
-            dur = r.get("duration") or 0
+            dur_raw = r.get("duration") or 0
+            dur = dur_raw / 1000 if dur_raw > 1000 else dur_raw  # Openverse uses ms
             if MIN_DURATION <= dur <= MAX_DURATION:
                 out.append(r)
             if len(out) >= max_results:
@@ -334,98 +487,204 @@ def _download_freesound_preview(sound: dict, dest_dir: Path) -> Path | None:
     return None
 
 
-def search_and_download_music(category: str, count: int = 3, trend_topic: str | None = None) -> list[Path]:
-    """Search for royalty-free music matching a content category from multiple sources.
-    Randomizes query order for variety across runs.
-    If trend_topic is set (gaming, roblox), prepends topic-augmented queries.
+def search_and_download_music(
+    category: str,
+    count: int = 3,
+    trend_topic: str | None = None,
+    script_keywords: list[str] | None = None,
+) -> list[Path]:
+    """Search all sources for royalty-free music, score by relevance, and download top matches.
+    Uses script keywords (like image/video search) for granular matching.
     """
     _ensure_dirs()
     music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
-    base_queries = list(music_config["queries"])
-    if trend_topic and trend_topic in TOPIC_MUSIC_MODIFIERS:
-        modifiers = TOPIC_MUSIC_MODIFIERS[trend_topic]
-        augmented = [f"{q} {mod}" for q in base_queries[:2] for mod in modifiers[:1]]
-        queries = augmented + base_queries
-    else:
-        queries = base_queries
-    freesound_tags = music_config.get("freesound_tags", [])
-    mood = music_config["mood"]
+    queries, freesound_tags, mood = _build_music_queries(category, script_keywords, trend_topic)
     mood_dir = MUSIC_DIR / mood
 
+    # Collect candidates from all sources
+    seen: set[tuple[str, str]] = set()
+    candidates: list[dict] = []
+
+    # YouTube
+    for query in queries[:6]:
+        logger.info("Searching YouTube for music: '%s'", query)
+        for entry in _search_youtube_music(query, max_results=5):
+            c = _normalize_candidate(entry, "youtube")
+            if c and (c["source"], c["url_or_id"]) not in seen:
+                seen.add((c["source"], c["url_or_id"]))
+                candidates.append(c)
+        time.sleep(1)
+
+    # Freesound
+    if freesound_tags:
+        fs_results = _search_freesound(freesound_tags[:5], max_results=10)
+        for entry in fs_results:
+            c = _normalize_candidate(entry, "freesound")
+            if c and (c["source"], c["url_or_id"]) not in seen:
+                seen.add((c["source"], c["url_or_id"]))
+                candidates.append(c)
+
+    # Openverse
+    ov_queries = [q.replace(" no copyright", "").replace(" royalty free", "") for q in queries[:4]]
+    for query in ov_queries:
+        ov_results = _search_openverse_music(query, mood, max_results=5)
+        for entry in ov_results:
+            c = _normalize_candidate(entry, "openverse")
+            if c and (c["source"], c["url_or_id"]) not in seen:
+                seen.add((c["source"], c["url_or_id"]))
+                candidates.append(c)
+
+    # Score and sort by relevance
+    kw = script_keywords or []
+    for c in candidates:
+        c["_score"] = _score_music_candidate(c, kw, music_config)
+    candidates.sort(key=lambda x: x["_score"], reverse=True)
+
+    # Add small random factor so we don't always pick the same top track
+    if candidates and candidates[0]["_score"] == candidates[-1]["_score"]:
+        random.shuffle(candidates)
+    else:
+        # Shuffle within similar score bands
+        top_scores = {c["_score"] for c in candidates[:count * 2]}
+        top = [c for c in candidates if c["_score"] in top_scores]
+        rest = [c for c in candidates if c["_score"] not in top_scores]
+        random.shuffle(top)
+        candidates = top + rest
+
     downloaded = []
-
-    # Shuffle queries so each run picks different tracks
-    random.shuffle(queries)
-
-    # Source 1: YouTube no-copyright channels
-    for query in queries:
+    for c in candidates:
         if len(downloaded) >= count:
             break
+        raw = c["raw"]
+        source = c["source"]
+        title = c["title"]
 
-        logger.info("Searching YouTube for music: '%s'", query)
-        entries = _search_youtube_music(query, max_results=5)
-        # Shuffle results for variety
-        random.shuffle(entries)
-
-        for entry in entries:
-            if len(downloaded) >= count:
-                break
-
-            duration = entry.get("duration") or 0
-            if duration < MIN_DURATION or duration > MAX_DURATION:
-                continue
-
-            video_id = entry.get("id", "")
-            title = entry.get("title", "track")
+        if source == "youtube":
+            video_id = raw.get("id", "")
             safe_title = _safe_filename(title)
             dest_stem = mood_dir / f"yt_{video_id}_{safe_title}"
             final_path = dest_stem.with_suffix(".mp3")
-
             if final_path.exists():
-                logger.debug("Track already cached: %s", final_path.name)
                 downloaded.append(final_path)
                 continue
-
-            video_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
-            logger.info("Downloading music: %s (%ds)", title[:50], duration)
-
-            if _download_audio(video_url, dest_stem):
-                if final_path.exists():
-                    logger.info("Saved: %s -> %s/ (%.0f KB)",
-                                final_path.name, mood, final_path.stat().st_size / 1024)
-                    downloaded.append(final_path)
-
-        time.sleep(1)
-
-    # Source 2: Freesound (CC0 licensed -- no attribution needed)
-    if len(downloaded) < count and freesound_tags:
-        random.shuffle(freesound_tags)
-        fs_results = _search_freesound(freesound_tags[:3], max_results=8)
-        random.shuffle(fs_results)
-
-        for sound in fs_results:
-            if len(downloaded) >= count:
-                break
-            path = _download_freesound_preview(sound, mood_dir)
+            url = raw.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
+            if _download_audio(url, dest_stem) and final_path.exists():
+                downloaded.append(final_path)
+        elif source == "freesound":
+            path = _download_freesound_preview(raw, mood_dir)
+            if path:
+                downloaded.append(path)
+        elif source == "openverse":
+            path = _download_openverse_audio(raw, mood_dir)
             if path:
                 downloaded.append(path)
 
-    # Source 3: Openverse (CC-licensed music; attribution required)
-    if len(downloaded) < count:
-        ov_queries = [q.replace(" no copyright", "").replace(" royalty free", "") for q in queries[:3]]
-        for query in ov_queries:
-            if len(downloaded) >= count:
-                break
-            ov_results = _search_openverse_music(query, mood, max_results=5)
-            random.shuffle(ov_results)
-            for audio in ov_results:
-                if len(downloaded) >= count:
-                    break
-                path = _download_openverse_audio(audio, mood_dir)
-                if path:
-                    downloaded.append(path)
-
     return downloaded
+
+
+def _collect_all_music_candidates(
+    category: str,
+    script_keywords: list[str] | None = None,
+    trend_topic: str | None = None,
+) -> list[dict]:
+    """Scrape local library AND online sources, score all candidates, return sorted by relevance.
+    Does not download — returns candidate dicts; caller downloads if needed.
+    """
+    _ensure_dirs()
+    music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
+    queries, freesound_tags, mood = _build_music_queries(category, script_keywords, trend_topic)
+    mood_dir = MUSIC_DIR / mood
+    kw = script_keywords or []
+
+    candidates: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    # 1. Add all local tracks as candidates
+    library = scan_local_library()
+    for mood_name, paths in library.items():
+        for p in paths:
+            c = _local_path_to_candidate(p)
+            key = ("local", str(p))
+            if key not in seen:
+                seen.add(key)
+                candidates.append(c)
+
+    # 2. Search YouTube
+    for query in queries[:6]:
+        logger.info("Searching YouTube for music: '%s'", query)
+        for entry in _search_youtube_music(query, max_results=5):
+            c = _normalize_candidate(entry, "youtube")
+            if c and (c["source"], c["url_or_id"]) not in seen:
+                seen.add((c["source"], c["url_or_id"]))
+                candidates.append(c)
+        time.sleep(1)
+
+    # 3. Search Freesound
+    if freesound_tags:
+        fs_results = _search_freesound(freesound_tags[:5], max_results=10)
+        for entry in fs_results:
+            c = _normalize_candidate(entry, "freesound")
+            if c and (c["source"], c["url_or_id"]) not in seen:
+                seen.add((c["source"], c["url_or_id"]))
+                candidates.append(c)
+
+    # 4. Search Openverse
+    ov_queries = [q.replace(" no copyright", "").replace(" royalty free", "") for q in queries[:4]]
+    for query in ov_queries:
+        ov_results = _search_openverse_music(query, mood, max_results=5)
+        for entry in ov_results:
+            c = _normalize_candidate(entry, "openverse")
+            if c and (c["source"], c["url_or_id"]) not in seen:
+                seen.add((c["source"], c["url_or_id"]))
+                candidates.append(c)
+
+    # 5. Score all candidates (local + online)
+    for c in candidates:
+        c["_score"] = _score_music_candidate(c, kw, music_config)
+    # Apply rejection penalty
+    conn = get_connection()
+    for c in candidates:
+        path = c.get("path")
+        src = c.get("source", "")
+        raw = c.get("raw", {})
+        size_bytes, mtime_real = None, None
+        fname = ""
+        src_id = None
+        if path:
+            fname = Path(path).name
+            if src in ("local", "user"):
+                try:
+                    st = Path(path).stat()
+                    size_bytes, mtime_real = st.st_size, st.st_mtime
+                except (OSError, TypeError):
+                    pass
+        else:
+            raw_id = raw.get("id") if isinstance(raw, dict) else None
+            if raw_id is not None:
+                src_id = str(raw_id)
+                fname = f"{src}_{src_id}.mp3"
+        if fname or (src and src_id):
+            penalty = get_rejection_penalty(
+                conn, fname, "music", category, "Wrong background music",
+                source=src if src and src != "local" else None,
+                source_id=src_id,
+                size_bytes=size_bytes, mtime_real=mtime_real,
+            )
+            c["_score"] -= penalty * PENALTY_PER_REJECTION
+    conn.close()
+    candidates.sort(key=lambda x: x["_score"], reverse=True)
+
+    # Shuffle within similar score bands for variety
+    if candidates and candidates[0]["_score"] == candidates[-1]["_score"]:
+        random.shuffle(candidates)
+    else:
+        top_scores = {c["_score"] for c in candidates[:6]}
+        top = [c for c in candidates if c["_score"] in top_scores]
+        rest = [c for c in candidates if c["_score"] not in top_scores]
+        random.shuffle(top)
+        candidates = top + rest
+
+    return candidates
 
 
 # --- Local Library Management ---
@@ -450,26 +709,46 @@ def scan_local_library() -> dict[str, list[Path]]:
     return library
 
 
-def find_best_music(category: str, script_tags: list[str] | None = None,
-                    trend_topic: str | None = None) -> Path | None:
-    """Find a matching music track for a script's category and tags.
-    Randomizes selection within each priority tier to avoid reusing the same
-    track across every video.
+def find_best_music(
+    category: str,
+    script_tags: list[str] | None = None,
+    trend_topic: str | None = None,
+    script_keywords: list[str] | None = None,
+) -> Path | None:
+    """Find a matching music track for a script's category, tags, and script keywords.
+    Scores cached tracks by keyword match (like image/video selection) when script_keywords provided.
 
     Priority:
     1. Topic-matched tracks (when trend_topic set, e.g. gaming/roblox)
-    2. Tag-matched tracks from the correct mood folder
-    3. Random track from the correct mood folder
-    4. Manually placed .mp3 files in the root music dir
-    5. Any available track from another mood as fallback
+    2. Script-keyword-matched tracks (highest score from stem match)
+    3. Tag-matched tracks from the correct mood folder
+    4. Random track from the correct mood folder
+    5. General/root directory tracks
+    6. Any available track as fallback
     """
     music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
     target_mood = music_config["mood"]
-
     library = scan_local_library()
-
-    # Priority 1: topic-matched tracks (when script inspired by gaming/roblox trends)
     mood_tracks = library.get(target_mood, [])
+
+    def _score_track(path: Path) -> float:
+        stem = path.stem.lower()
+        score = 0.0
+        if trend_topic and trend_topic in TOPIC_MUSIC_MODIFIERS:
+            for term in TOPIC_MUSIC_MODIFIERS[trend_topic]:
+                if term in stem:
+                    score += 2.0
+        if script_keywords:
+            for kw in script_keywords:
+                if kw.lower() in stem:
+                    score += 1.0
+        if script_tags:
+            for tag in script_tags:
+                if tag.lower() in stem:
+                    score += 0.5
+        return score
+
+    # Priority 1: topic-matched
     if mood_tracks and trend_topic and trend_topic in TOPIC_MUSIC_MODIFIERS:
         topic_terms = TOPIC_MUSIC_MODIFIERS[trend_topic]
         topic_matches = [t for t in mood_tracks if any(term in t.stem.lower() for term in topic_terms)]
@@ -478,27 +757,26 @@ def find_best_music(category: str, script_tags: list[str] | None = None,
             logger.info("Topic-matched music: %s (topic: %s)", pick.name, trend_topic)
             return pick
 
-    # Priority 2 & 3: tag-matched or mood-matched tracks
+    # Priority 2–4: score and pick best from mood folder
     if mood_tracks:
-        if script_tags:
-            tag_set = {t.lower() for t in script_tags}
-            tag_matches = [t for t in mood_tracks if any(tag in t.stem.lower() for tag in tag_set)]
-            if tag_matches:
-                pick = random.choice(tag_matches)
-                logger.info("Tag-matched music: %s (mood: %s)", pick.name, target_mood)
-                return pick
+        scored = [(t, _score_track(t)) for t in mood_tracks]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        best_score = scored[0][1] if scored else 0
+        best_tracks = [t for t, s in scored if s == best_score and s > 0]
+        if best_tracks:
+            pick = random.choice(best_tracks)
+            logger.info("Keyword-matched music: %s (mood: %s)", pick.name, target_mood)
+            return pick
         pick = random.choice(mood_tracks)
         logger.info("Mood-matched music: %s (mood: %s)", pick.name, target_mood)
         return pick
 
-    # Priority 3: general/root directory tracks
     general_tracks = library.get("general", [])
     if general_tracks:
         pick = random.choice(general_tracks)
         logger.info("Using general music: %s", pick.name)
         return pick
 
-    # Priority 4: any available mood
     all_tracks = [t for tracks in library.values() for t in tracks]
     if all_tracks:
         pick = random.choice(all_tracks)
@@ -531,23 +809,55 @@ def ensure_music_for_category(category: str, min_tracks: int = 2) -> list[Path]:
 
 # --- Integration with sourcing pipeline ---
 
-def source_music_for_script(script_id: int, category: str, tags: list[str] | None = None,
-                           trend_topic: str | None = None) -> Path | None:
+def source_music_for_script(
+    script_id: int,
+    category: str,
+    tags: list[str] | None = None,
+    trend_topic: str | None = None,
+    script_keywords: list[str] | None = None,
+) -> Path | None:
     """Full music sourcing pipeline for a script:
-    1. Check local library for matching track (topic-matched if trend_topic set)
-    2. If insufficient, download with topic-augmented queries when applicable
-    3. Insert asset record into database
-    4. Return path to selected track
+    1. Scrape BOTH local library and online sources (YouTube, Freesound, Openverse)
+    2. Score all candidates together by relevance (mood, script keywords, category)
+    3. Select the best-scoring track
+    4. If best is online, download it; if local, use directly
+    5. Insert asset record into database
     """
-    # Try local first (with topic preference when applicable)
-    track_path = find_best_music(category, tags, trend_topic=trend_topic)
+    candidates = _collect_all_music_candidates(
+        category, script_keywords=script_keywords, trend_topic=trend_topic
+    )
+    if not candidates:
+        logger.warning("No music candidates found for script #%d (category: %s)", script_id, category)
+        return None
 
-    # Download if nothing available (with topic-augmented queries when applicable)
-    if not track_path:
-        logger.info("No local music for category '%s', downloading...", category)
-        downloaded = search_and_download_music(category, count=2, trend_topic=trend_topic)
-        if downloaded:
-            track_path = downloaded[0]
+    music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
+    mood_dir = MUSIC_DIR / music_config["mood"]
+    track_path = None
+
+    for best in candidates:
+        if best["source"] == "local":
+            track_path = best["path"]
+            logger.info("Music: selected local (score %.1f) — %s", best["_score"], track_path.name)
+            break
+        raw = best["raw"]
+        if best["source"] == "youtube":
+            video_id = raw.get("id", "")
+            title = best["title"]
+            dest_stem = mood_dir / f"yt_{video_id}_{_safe_filename(title)}"
+            final_path = dest_stem.with_suffix(".mp3")
+            if final_path.exists():
+                track_path = final_path
+            else:
+                url = raw.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
+                if _download_audio(url, dest_stem):
+                    track_path = final_path
+        elif best["source"] == "freesound":
+            track_path = _download_freesound_preview(raw, mood_dir)
+        elif best["source"] == "openverse":
+            track_path = _download_openverse_audio(raw, mood_dir)
+        if track_path:
+            logger.info("Music: selected online %s (score %.1f) — %s", best["source"], best["_score"], track_path.name)
+            break
 
     if not track_path:
         logger.warning("Could not source music for script #%d (category: %s)", script_id, category)

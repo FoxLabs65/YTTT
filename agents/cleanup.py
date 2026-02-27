@@ -16,11 +16,14 @@ from models.database import (
     get_rejected_videos,
     get_uploaded_videos,
     get_script_asset_paths,
+    get_assets_for_script,
     is_asset_shared,
     delete_assets_for_script,
     mark_video_archived,
     delete_rejected_video_record,
     record_rejected_trend_sources,
+    insert_rejection_feedback,
+    insert_rejection_assets,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +117,39 @@ def cleanup_single_rejected_video(video_id: int, defer_asset_cleanup: bool = Fal
         files_deleted += 1
 
     if script_id and not defer_asset_cleanup:
+        # Capture rejection assets before deletion (for negative scoring)
+        script_row = conn.execute("SELECT category FROM scripts WHERE id = ?", (script_id,)).fetchone()
+        category = script_row["category"] if script_row else "storytime"
+        assets = get_assets_for_script(conn, script_id)
+        rejection_id = insert_rejection_feedback(conn, video_id, script_id, category, reason)
+        for a in assets:
+            atype = a["asset_type"]
+            if atype not in ("music", "video", "image"):
+                continue
+            path_str = a.get("local_path", "")
+            fname = Path(path_str).name if path_str else ""
+            src = a.get("source", "") or ""
+            sid = str(a.get("source_id", "")) if a.get("source_id") is not None else ""
+            if not fname and src and sid:
+                fname = f"{src}_{sid}.mp4" if atype == "video" else f"{src}_{sid}.jpg" if atype == "image" else f"{src}_{sid}.mp3"
+            # For online music, extract raw id for lookup (yt_xxx_title -> xxx, fs_123_name -> 123)
+            if atype == "music" and fname and src in ("youtube", "freesound", "openverse"):
+                stem = Path(fname).stem
+                if stem.startswith("yt_") and "_" in stem[3:]:
+                    sid = stem.split("_", 2)[1]  # video_id
+                elif stem.startswith("fs_") and "_" in stem[3:]:
+                    sid = stem.split("_", 2)[1]
+                elif stem.startswith("ov_") and "_" in stem[3:]:
+                    sid = stem.split("_", 2)[1]
+            if fname:
+                size_bytes, mtime_real = None, None
+                if src in ("user", "user_selected", "local") and path_str:
+                    try:
+                        st = Path(path_str).stat()
+                        size_bytes, mtime_real = st.st_size, st.st_mtime
+                    except OSError:
+                        pass
+                insert_rejection_assets(conn, rejection_id, atype, fname, src or None, sid or None, size_bytes, mtime_real)
         files_deleted += _cleanup_script_assets(script_id, conn)
 
     if not defer_asset_cleanup:
@@ -153,6 +189,38 @@ def cleanup_rejected() -> dict:
             files_deleted += 1
 
         if script_id:
+            # Capture rejection assets before deletion (for negative scoring)
+            script_row = conn.execute("SELECT category FROM scripts WHERE id = ?", (script_id,)).fetchone()
+            category = script_row["category"] if script_row else "storytime"
+            assets = get_assets_for_script(conn, script_id)
+            rejection_id = insert_rejection_feedback(conn, video["id"], script_id, category, reason)
+            for a in assets:
+                atype = a["asset_type"]
+                if atype not in ("music", "video", "image"):
+                    continue
+                path_str = a.get("local_path", "")
+                fname = Path(path_str).name if path_str else ""
+                src = a.get("source", "") or ""
+                sid = str(a.get("source_id", "")) if a.get("source_id") is not None else ""
+                if not fname and src and sid:
+                    fname = f"{src}_{sid}.mp4" if atype == "video" else f"{src}_{sid}.jpg" if atype == "image" else f"{src}_{sid}.mp3"
+                if atype == "music" and fname and src in ("youtube", "freesound", "openverse"):
+                    stem = Path(fname).stem
+                    if stem.startswith("yt_") and "_" in stem[3:]:
+                        sid = stem.split("_", 2)[1]
+                    elif stem.startswith("fs_") and "_" in stem[3:]:
+                        sid = stem.split("_", 2)[1]
+                    elif stem.startswith("ov_") and "_" in stem[3:]:
+                        sid = stem.split("_", 2)[1]
+                if fname:
+                    size_bytes, mtime_real = None, None
+                    if src in ("user", "user_selected", "local") and path_str:
+                        try:
+                            st = Path(path_str).stat()
+                            size_bytes, mtime_real = st.st_size, st.st_mtime
+                        except OSError:
+                            pass
+                    insert_rejection_assets(conn, rejection_id, atype, fname, src or None, sid or None, size_bytes, mtime_real)
             files_deleted += _cleanup_script_assets(script_id, conn)
 
         delete_rejected_video_record(conn, video["id"])

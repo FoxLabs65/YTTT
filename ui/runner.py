@@ -6,6 +6,7 @@ Streams stdout/stderr to a log file that pages can poll via st.session_state.
 """
 
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -87,6 +88,7 @@ class TaskRunner:
                 log_f.write(f"Command: {' '.join(cmd)}\n\n")
                 log_f.flush()
 
+                env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
                 self.process = subprocess.Popen(
                     cmd,
                     stdout=log_f,
@@ -94,6 +96,7 @@ class TaskRunner:
                     cwd=str(PROJECT_ROOT),
                     text=True,
                     bufsize=1,
+                    env=env,
                 )
                 self.process.wait()
                 self.exit_code = self.process.returncode

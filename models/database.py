@@ -139,6 +139,10 @@ def _migrate_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE scripts ADD COLUMN music_override_path TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE scripts ADD COLUMN user_selected_asset_paths TEXT")
+    except sqlite3.OperationalError:
+        pass
     # Rejection history: trend IDs from rejected videos/scripts — excluded from future ideation
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rejected_trend_ids (
@@ -147,6 +151,31 @@ def _migrate_schema(conn: sqlite3.Connection):
             reason TEXT
         )
     """)
+    # Rejection feedback: per-asset rejection counts for negative scoring
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rejection_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id INTEGER,
+            script_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            rejection_reason TEXT NOT NULL,
+            rejected_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS rejection_assets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rejection_id INTEGER NOT NULL,
+            asset_type TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            source TEXT,
+            source_id TEXT,
+            size_bytes INTEGER,
+            mtime_real REAL,
+            FOREIGN KEY (rejection_id) REFERENCES rejection_feedback(id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rejection_assets_lookup ON rejection_assets(asset_type, filename, source)")
 
 
 def _now() -> str:
@@ -244,6 +273,132 @@ def record_rejected_trend_sources(conn: sqlite3.Connection, script_id: int, reas
     conn.commit()
 
 
+def insert_rejection_feedback(
+    conn: sqlite3.Connection,
+    video_id: int | None,
+    script_id: int,
+    category: str,
+    reason: str,
+) -> int:
+    """Record a rejection event. Returns rejection_id."""
+    cur = conn.execute(
+        """INSERT INTO rejection_feedback (video_id, script_id, category, rejection_reason, rejected_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (video_id, script_id, category, reason, _now()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def insert_rejection_assets(
+    conn: sqlite3.Connection,
+    rejection_id: int,
+    asset_type: str,
+    filename: str,
+    source: str | None = None,
+    source_id: str | None = None,
+    size_bytes: int | None = None,
+    mtime_real: float | None = None,
+) -> None:
+    """Record an asset that was part of a rejected video."""
+    conn.execute(
+        """INSERT INTO rejection_assets (rejection_id, asset_type, filename, source, source_id, size_bytes, mtime_real)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (rejection_id, asset_type, filename, source, source_id, size_bytes, mtime_real),
+    )
+    conn.commit()
+
+
+PENALTY_PER_REJECTION = 0.5
+
+
+def get_rejection_penalty(
+    conn: sqlite3.Connection,
+    filename: str,
+    asset_type: str,
+    category: str,
+    reason_filter: str,
+    *,
+    source: str | None = None,
+    source_id: str | None = None,
+    size_bytes: int | None = None,
+    mtime_real: float | None = None,
+) -> int:
+    """Return count of rejections for this asset. For user/local: require size+mtime match."""
+    if not filename and not (source and source_id):
+        return 0
+    if size_bytes is not None and mtime_real is not None:
+        # User/local asset: match filename + size + mtime
+        row = conn.execute(
+            """SELECT COUNT(*) FROM rejection_assets ra
+               JOIN rejection_feedback rf ON ra.rejection_id = rf.id
+               WHERE ra.asset_type = ? AND rf.category = ? AND rf.rejection_reason LIKE ?
+                 AND ra.filename = ? AND ra.size_bytes = ? AND ra.mtime_real = ?""",
+            (asset_type, category, f"%{reason_filter}%", filename, size_bytes, mtime_real),
+        ).fetchone()
+    else:
+        # Scraped asset: match filename OR (source, source_id)
+        if filename:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM rejection_assets ra
+                   JOIN rejection_feedback rf ON ra.rejection_id = rf.id
+                   WHERE ra.asset_type = ? AND rf.category = ? AND rf.rejection_reason LIKE ?
+                     AND ra.filename = ? AND ra.size_bytes IS NULL""",
+                (asset_type, category, f"%{reason_filter}%", filename),
+            ).fetchone()
+        elif source and source_id:
+            row = conn.execute(
+                """SELECT COUNT(*) FROM rejection_assets ra
+                   JOIN rejection_feedback rf ON ra.rejection_id = rf.id
+                   WHERE ra.asset_type = ? AND rf.category = ? AND rf.rejection_reason LIKE ?
+                     AND ra.source = ? AND ra.source_id = ? AND ra.size_bytes IS NULL""",
+                (asset_type, category, f"%{reason_filter}%", source, source_id),
+            ).fetchone()
+        else:
+            return 0
+    return row[0] if row else 0
+
+
+SCRIPT_REJECTION_REASONS = ("Script not engaging", "Inappropriate content")
+
+
+def get_rejection_insights_by_category(conn: sqlite3.Connection) -> dict[str, list[tuple[str, int]]]:
+    """Returns {category: [(reason, count), ...]} for script-related rejection reasons."""
+    placeholders = ",".join("?" * len(SCRIPT_REJECTION_REASONS))
+    rows = conn.execute(
+        f"""SELECT category, rejection_reason, COUNT(*) AS cnt
+            FROM rejection_feedback
+            WHERE rejection_reason IN ({placeholders})
+            GROUP BY category, rejection_reason
+            ORDER BY category, cnt DESC""",
+        SCRIPT_REJECTION_REASONS,
+    ).fetchall()
+    result: dict[str, list[tuple[str, int]]] = {}
+    for r in rows:
+        cat = r["category"] or "other"
+        if cat not in result:
+            result[cat] = []
+        result[cat].append((r["rejection_reason"], r["cnt"]))
+    return result
+
+
+def get_rejection_guidance_for_category(conn: sqlite3.Connection, category: str) -> str:
+    """Return guidance text to prepend to ideation prompt, or '' if none."""
+    placeholders = ",".join("?" * len(SCRIPT_REJECTION_REASONS))
+    rows = conn.execute(
+        f"""SELECT rejection_reason, COUNT(*) AS cnt
+            FROM rejection_feedback
+            WHERE category = ? AND rejection_reason IN ({placeholders})
+            GROUP BY rejection_reason
+            ORDER BY cnt DESC""",
+        (category, *SCRIPT_REJECTION_REASONS),
+    ).fetchall()
+    if not rows:
+        return ""
+    parts = [f"{r['rejection_reason']} ({r['cnt']})" for r in rows]
+    return f"Previous rejections cited: {', '.join(parts)}. Ensure stronger hooks and more engaging content."
+
+
 # Topics that can influence asset selection (music, videos, images)
 ASSET_TOPICS = frozenset({"gaming", "roblox"})
 
@@ -320,8 +475,8 @@ def purge_discovery_data(conn: sqlite3.Connection) -> tuple[int, int]:
 
 def insert_script(conn: sqlite3.Connection, **kwargs) -> int:
     kwargs.setdefault("created_at", _now())
-    for key in ("suggested_tags", "visual_cues", "title_variants", "trend_source_ids"):
-        if key in kwargs and isinstance(kwargs[key], list):
+    for key in ("suggested_tags", "visual_cues", "title_variants", "trend_source_ids", "user_selected_asset_paths"):
+        if key in kwargs and kwargs[key] is not None and isinstance(kwargs[key], list):
             kwargs[key] = json.dumps(kwargs[key])
 
     cols = ", ".join(kwargs.keys())

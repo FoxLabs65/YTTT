@@ -522,6 +522,7 @@ def main():
     group.add_argument("--reaction-discovery", action="store_true", help="Discover YouTube reaction clip candidates (human review required)")
     group.add_argument("--reaction-extract", action="store_true", help="Extract clips for approved reaction candidates")
     group.add_argument("--tiktok-oauth", action="store_true", help="Run TikTok OAuth flow (authorize app for Content Posting API)")
+    group.add_argument("--reset", action="store_true", help="Clean slate: clear database and remove all assets/output files")
 
     parser.add_argument("--script-id", type=int, help="Script ID for regenerate")
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
@@ -582,6 +583,80 @@ def main():
         else:
             logger.error("TikTok OAuth failed. Check client_key, client_secret, and redirect_uri in settings.yaml")
             sys.exit(1)
+    elif args.reset:
+        cmd_reset()
+
+
+def cmd_reset():
+    """Clear database and remove all assets/output for a clean start."""
+    from models.database import init_db, get_connection
+
+    logger.info("--- Reset: Clean Slate ---")
+
+    # 1. Clear database (order respects foreign keys)
+    init_db()
+    conn = get_connection()
+    conn.execute("DELETE FROM uploads")
+    conn.execute("DELETE FROM videos")
+    conn.execute("DELETE FROM assets")
+    conn.execute("DELETE FROM scripts")
+    conn.execute("DELETE FROM trends")
+    conn.execute("DELETE FROM trending_tags")
+    conn.execute("DELETE FROM rejected_trend_ids")
+    conn.commit()
+    conn.close()
+    logger.info("Database cleared.")
+
+    # 2. Remove assets
+    asset_dirs = [
+        PROJECT_ROOT / "assets" / "stock_footage",
+        PROJECT_ROOT / "assets" / "images",
+        PROJECT_ROOT / "assets" / "voiceovers",
+        PROJECT_ROOT / "assets" / "reaction_clips",
+        PROJECT_ROOT / "assets" / "music",
+    ]
+    assets_removed = 0
+    for d in asset_dirs:
+        if d.exists():
+            for f in d.rglob("*"):
+                if f.is_file():
+                    try:
+                        f.unlink()
+                        assets_removed += 1
+                    except OSError as e:
+                        logger.warning("Could not remove %s: %s", f, e)
+    logger.info("Assets removed: %d files", assets_removed)
+
+    # 3. Remove output files
+    output_dirs = [
+        PROJECT_ROOT / "output" / "pending",
+        PROJECT_ROOT / "output" / "archive",
+        PROJECT_ROOT / "output" / "approved",
+        PROJECT_ROOT / "output" / "rejected",
+        PROJECT_ROOT / "output" / "published",
+    ]
+    output_removed = 0
+    for d in output_dirs:
+        if d.exists():
+            for f in d.rglob("*"):
+                if f.is_file():
+                    try:
+                        f.unlink()
+                        output_removed += 1
+                    except OSError as e:
+                        logger.warning("Could not remove %s: %s", f, e)
+    logger.info("Output removed: %d files", output_removed)
+
+    # 4. Remove reaction candidates
+    candidates_file = PROJECT_ROOT / "data" / "reaction" / "candidates.json"
+    if candidates_file.exists():
+        try:
+            candidates_file.unlink()
+            logger.info("Reaction candidates removed.")
+        except OSError as e:
+            logger.warning("Could not remove candidates.json: %s", e)
+
+    logger.info("Reset complete. Ready for a clean start.")
 
 
 if __name__ == "__main__":
