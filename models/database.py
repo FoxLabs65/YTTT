@@ -143,6 +143,10 @@ def _migrate_schema(conn: sqlite3.Connection):
         conn.execute("ALTER TABLE scripts ADD COLUMN user_selected_asset_paths TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE scripts ADD COLUMN force_ai_audio_override INTEGER")
+    except sqlite3.OperationalError:
+        pass
     # Rejection history: trend IDs from rejected videos/scripts — excluded from future ideation
     conn.execute("""
         CREATE TABLE IF NOT EXISTS rejected_trend_ids (
@@ -207,26 +211,37 @@ def get_top_trends(
     limit: int = 50,
     hours: int = 48,
     exclude_trend_ids: list[int] | None = None,
+    category_filter: str | list[str] | None = None,
 ) -> list[dict]:
-    """Return top trends. Optionally exclude trend IDs that led to rejected content."""
+    """Return top trends. Optionally exclude rejected IDs. When category_filter is set,
+    prefer trends matching that category; fall back to all if none match."""
     cutoff = datetime.now(timezone.utc).isoformat()
-    if exclude_trend_ids:
-        placeholders = ",".join("?" * len(exclude_trend_ids))
+    cats = [category_filter] if isinstance(category_filter, str) else (category_filter or [])
+
+    def _fetch(extra_sql: str = "", extra_params: tuple = ()) -> list:
+        exclude_sql = ""
+        params: tuple = (cutoff, hours)
+        if exclude_trend_ids:
+            exclude_sql = f" AND id NOT IN ({','.join('?' * len(exclude_trend_ids))})"
+            params = params + tuple(exclude_trend_ids)
+        params = params + extra_params + (limit,)
         rows = conn.execute(
             f"""SELECT * FROM trends
                WHERE scraped_at >= datetime(?, '-' || ? || ' hours')
-                 AND id NOT IN ({placeholders})
+               {exclude_sql} {extra_sql}
                ORDER BY trend_score DESC LIMIT ?""",
-            (cutoff, hours, *exclude_trend_ids, limit),
+            params,
         ).fetchall()
+        return [dict(r) for r in rows]
+
+    if cats:
+        placeholders = ",".join("?" * len(cats))
+        result = _fetch(f" AND COALESCE(category, 'other') IN ({placeholders})", tuple(cats))
+        if not result:
+            result = _fetch()
     else:
-        rows = conn.execute(
-            """SELECT * FROM trends
-               WHERE scraped_at >= datetime(?, '-' || ? || ' hours')
-               ORDER BY trend_score DESC LIMIT ?""",
-            (cutoff, hours, limit),
-        ).fetchall()
-    return [dict(r) for r in rows]
+        result = _fetch()
+    return result
 
 
 def get_trends_by_ids(conn: sqlite3.Connection, trend_ids: list[int]) -> list[dict]:
@@ -248,6 +263,17 @@ def get_rejected_trend_ids(conn: sqlite3.Connection) -> set[int]:
     """Return trend IDs that led to rejected content (excluded from ideation)."""
     rows = conn.execute("SELECT trend_id FROM rejected_trend_ids").fetchall()
     return {r["trend_id"] for r in rows}
+
+
+def get_recent_script_titles(conn: sqlite3.Connection, hours: int = 72) -> list[str]:
+    """Return titles of scripts created in the last N hours. Used for topic deduplication in ideation."""
+    rows = conn.execute(
+        """SELECT title FROM scripts
+           WHERE created_at >= datetime('now', '-' || ? || ' hours')
+           ORDER BY created_at DESC""",
+        (hours,),
+    ).fetchall()
+    return [r["title"].strip() for r in rows if r["title"] and r["title"].strip()]
 
 
 def record_rejected_trend_sources(conn: sqlite3.Connection, script_id: int, reason: str | None = None):
@@ -399,8 +425,9 @@ def get_rejection_guidance_for_category(conn: sqlite3.Connection, category: str)
     return f"Previous rejections cited: {', '.join(parts)}. Ensure stronger hooks and more engaging content."
 
 
-# Topics that can influence asset selection (music, videos, images)
-ASSET_TOPICS = frozenset({"gaming", "roblox"})
+# Topics for asset query augmentation. Empty = no hardcoded topic modifiers.
+# User-provided discovery queries drive trends; script categories drive style.
+ASSET_TOPICS: frozenset[str] = frozenset()
 
 
 def get_dominant_trend_topic(conn: sqlite3.Connection, trend_source_ids: list[int] | str | None) -> str | None:
@@ -583,13 +610,22 @@ def update_upload(conn: sqlite3.Connection, upload_id: int, **kwargs):
     conn.commit()
 
 
-def get_pending_uploads(conn: sqlite3.Connection, platform: str | None = None) -> list[dict]:
+def get_pending_uploads(
+    conn: sqlite3.Connection,
+    platform: str | None = None,
+    upload_ids: list[int] | None = None,
+) -> list[dict]:
+    """Return pending uploads. Optional platform and upload_ids filters."""
     query = "SELECT u.*, v.file_path, v.yt_title, v.yt_description, v.yt_tags, v.tt_caption, v.thumbnail_path FROM uploads u JOIN videos v ON u.video_id = v.id WHERE u.upload_status = 'pending'"
     params = []
     if platform:
         query += " AND u.platform = ?"
         params.append(platform)
-    query += " ORDER BY u.scheduled_time ASC NULLS LAST"
+    if upload_ids:
+        placeholders = ",".join("?" * len(upload_ids))
+        query += f" AND u.id IN ({placeholders})"
+        params.extend(upload_ids)
+    query += " ORDER BY u.platform, u.id"
     rows = conn.execute(query, params).fetchall()
     return [dict(r) for r in rows]
 

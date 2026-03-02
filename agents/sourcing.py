@@ -20,7 +20,6 @@ from models.database import (
     get_connection,
     get_scripts_by_status,
     get_assets_for_script,
-    get_dominant_trend_topic,
     get_trends_by_ids,
     insert_asset,
     update_script_status,
@@ -675,11 +674,8 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
     return unique[:25]
 
 
-# Topic modifiers for video/image search (when script inspired by gaming/roblox trends)
-TOPIC_VISUAL_MODIFIERS = {
-    "gaming": ["gaming", "gameplay", "esports", "gamer reaction"],
-    "roblox": ["roblox", "kids gaming", "cartoon game", "playful game"],
-}
+# Topic modifiers for video/image search. Empty — no static topics; user discovery queries drive trends.
+TOPIC_VISUAL_MODIFIERS: dict[str, list[str]] = {}
 
 CATEGORY_VISUAL_FALLBACKS = {
     "motivational": ["sunrise inspiration", "person walking forward", "mountain peak", "ocean waves calm"],
@@ -844,11 +840,8 @@ def source_assets_for_script(script: dict) -> bool:
     script_keywords = _extract_script_keywords(script_body, title, script_tags)
     logger.info("Script #%d: extracted %d keywords: %s", script_id, len(script_keywords), script_keywords[:8])
 
-    # Step 1b: Get dominant trend topic for topic-augmented queries (gaming, roblox, etc.)
-    trend_source_ids = script.get("trend_source_ids")
-    trend_topic = get_dominant_trend_topic(conn, trend_source_ids)
-    if trend_topic:
-        logger.info("Script #%d: trend topic '%s' — augmenting video/image queries", script_id, trend_topic)
+    # No static trend topic augmentation — discovery and asset selection use only user-provided queries
+    trend_topic = None
 
     visual_cues = script.get("visual_cues", "[]")
     if isinstance(visual_cues, str):
@@ -1177,11 +1170,29 @@ def source_assets_for_script(script: dict) -> bool:
                         break
 
     # Step 4: Source background music (with script keywords and topic augmentation)
-    from agents.music_scraper import source_music_for_script
-    source_music_for_script(
-        script_id, category, tags=script_tags, trend_topic=trend_topic,
-        script_keywords=script_keywords,
-    )
+    music_override = script.get("music_override_path")
+    if music_override and Path(music_override).expanduser().exists():
+        from agents.music_scraper import CATEGORY_MUSIC_MAP
+        override_path = Path(music_override).expanduser().resolve()
+        music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
+        insert_asset(
+            conn,
+            script_id=script_id,
+            asset_type="music",
+            source="user_selected",
+            source_id=None,
+            local_path=str(override_path),
+            mood=music_config["mood"],
+        )
+        logger.info("Script #%d: using music override %s", script_id, override_path.name)
+    else:
+        from agents.music_scraper import source_music_for_script
+        force_ai = script.get("force_ai_audio_override") == 1 or cfg("sourcing.music.force_ai_audio") or False
+        source_music_for_script(
+            script_id, category, tags=script_tags, trend_topic=trend_topic,
+            script_keywords=script_keywords,
+            force_ai_audio=force_ai,
+        )
 
     # Step 5: Generate voiceover with word-boundary metadata for caption sync.
     full_text = script_body.strip()

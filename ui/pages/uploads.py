@@ -28,31 +28,83 @@ def render():
 
     # ── Pending Uploads ─────────────────────────────────────────
     section_header("Pending Uploads")
+    st.caption("Select which videos to upload. Uploads are spaced to protect channel algorithm ranking.")
 
     pending = get_pending_uploads(conn)
 
     if pending:
-        st.caption(f"{len(pending)} uploads waiting")
+        default_selected = st.session_state.get("upload_selected_ids", set())
+
+        selected_ids = []
+        for u in pending:
+            uid = u.get("id")
+            platform = u.get("platform", "?")
+            title = (u.get("yt_title") or "Untitled")[:50]
+            is_selected = st.checkbox(
+                f"{platform.title()} — {title}",
+                value=uid in default_selected,
+                key=f"upload_sel_{uid}",
+            )
+            if is_selected:
+                selected_ids.append(uid)
+        st.session_state["upload_selected_ids"] = set(selected_ids)
+
+        if selected_ids:
+            st.caption(f"✓ {len(selected_ids)} selected. Uploads spaced per config to avoid algorithm penalty.")
+
+        col_sel1, col_sel2, _ = st.columns([1, 1, 2])
+        with col_sel1:
+            if st.button("Select all", key="upload_sel_all"):
+                st.session_state["upload_selected_ids"] = {u["id"] for u in pending}
+                st.rerun()
+        with col_sel2:
+            if st.button("Deselect all", key="upload_desel_all"):
+                st.session_state["upload_selected_ids"] = set()
+                st.rerun()
 
         col_action1, col_action2, col_action3 = st.columns(3)
         with col_action1:
-            if st.button("Upload All", type="primary", disabled=runner.is_running, width="stretch"):
-                runner.start("upload")
-                st.toast("Upload started!")
+            disabled = runner.is_running or not selected_ids
+            if st.button(
+                "Upload Selected",
+                type="primary",
+                disabled=disabled,
+                width="stretch",
+                help="Upload selected videos only" if selected_ids else "Select at least one video",
+            ):
+                extra = ["--upload-ids", ",".join(str(i) for i in selected_ids)]
+                runner.start("upload", extra)
+                st.toast(f"Uploading {len(selected_ids)} selected video(s)…")
                 st.rerun()
         with col_action2:
-            if st.button("Upload YouTube Only", disabled=runner.is_running, width="stretch"):
-                runner.start("upload", ["--platform", "youtube"])
-                st.toast("YouTube upload started!")
+            yt_ids = [u["id"] for u in pending if u.get("platform") == "youtube" and u["id"] in selected_ids]
+            if st.button(
+                "Upload Selected (YouTube)",
+                disabled=runner.is_running or not yt_ids,
+                width="stretch",
+                help="Upload selected YouTube only" if yt_ids else "Select YouTube video(s)",
+            ):
+                extra = ["--platform", "youtube", "--upload-ids", ",".join(str(i) for i in yt_ids)]
+                runner.start("upload", extra)
+                st.toast(f"Uploading {len(yt_ids)} to YouTube…")
                 st.rerun()
         with col_action3:
-            if st.button("Upload TikTok Only", disabled=runner.is_running, width="stretch"):
-                runner.start("upload", ["--platform", "tiktok"])
-                st.toast("TikTok upload started!")
+            tt_ids = [u["id"] for u in pending if u.get("platform") == "tiktok" and u["id"] in selected_ids]
+            if st.button(
+                "Upload Selected (TikTok)",
+                disabled=runner.is_running or not tt_ids,
+                width="stretch",
+                help="Upload selected TikTok only" if tt_ids else "Select TikTok video(s)",
+            ):
+                extra = ["--platform", "tiktok", "--upload-ids", ",".join(str(i) for i in tt_ids)]
+                runner.start("upload", extra)
+                st.toast(f"Uploading {len(tt_ids)} to TikTok…")
                 st.rerun()
 
+        st.divider()
+
         for u in pending:
-            with st.expander(f"{u.get('platform', '?').title()} — {u.get('yt_title', 'Untitled')[:50]}"):
+            with st.expander(f"{u.get('platform', '?').title()} — {u.get('yt_title', 'Untitled')[:50]}", expanded=False):
                 col1, col2 = st.columns([1, 2])
                 with col1:
                     fpath = Path(u.get("file_path", ""))
@@ -73,18 +125,8 @@ def render():
     if upload_active:
         with st.expander("Upload Log", expanded=True):
             static_log_viewer(task_name="upload", lines=40)
-        if st.button("Refresh", help="Refresh page to see latest status"):
+        if st.button("Refresh", key="upload_refresh", help="Update page with latest upload status"):
             st.rerun()
-
-    # Auto-refresh when upload is running (updates status, pending list, log)
-    # Use 5s interval to reduce "fragment does not exist" warnings during reruns
-    @st.fragment(run_every=5)
-    def _upload_refresh():
-        r = get_runner()
-        if r.is_running and r.task_name == "upload":
-            st.rerun()
-
-    _upload_refresh()
 
     st.divider()
 

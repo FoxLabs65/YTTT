@@ -102,27 +102,18 @@ def running_indicator():
 
 
 def live_log_viewer(task_name: str | None = None, lines: int = 50):
-    """Show live-updating log when a background task is running.
-    Uses st.fragment(run_every=5) to reduce "fragment does not exist" errors.
-    IMPORTANT: Only call from the sidebar (app.py) — page-specific fragments get
-    orphaned when navigating, causing "fragment does not exist" errors.
-    """
+    """Show log when a background task is running. Static snapshot — use Refresh to update.
+    Note: run_every fragment removed to avoid 'fragment does not exist' errors on rerun."""
     from ui.runner import get_runner
-    runner = get_runner()
-
-    @st.fragment(run_every=5)
-    def _live_fragment():
-        r = get_runner()
-        if r.is_running and (task_name is None or r.task_name == task_name):
-            st.caption(f"Running... {r.elapsed} — auto-refreshing every 5s")
-            log_viewer(r.get_log_tail(lines))
-        elif r.status in ("completed", "failed") and r.log_path and r.log_path.exists():
-            st.caption(f"Finished: {r.status} ({r.elapsed})")
-            log_viewer(r.get_log_tail(lines))
-        else:
-            st.info("No active task. Start a task to see live logs.")
-
-    _live_fragment()
+    r = get_runner()
+    if r.is_running and (task_name is None or r.task_name == task_name):
+        st.caption(f"Running... {r.elapsed}")
+        log_viewer(r.get_log_tail(lines))
+    elif r.status in ("completed", "failed") and r.log_path and r.log_path.exists():
+        st.caption(f"Finished: {r.status} ({r.elapsed})")
+        log_viewer(r.get_log_tail(lines))
+    else:
+        st.info("No active task. Start a task to see logs.")
 
 
 def static_log_viewer(task_name: str | None = None, lines: int = 50):

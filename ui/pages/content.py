@@ -59,22 +59,29 @@ def render():
 
     # ── Search Criteria (expanded) ─────────────────────────────────
     with st.expander("Search Criteria", expanded=True):
+        st.caption("Choose which tags to use for each search. Add/delete below to manage your tag library.")
         col_yt, col_tt = st.columns(2)
 
         with col_yt:
             st.markdown("**YouTube Queries**")
-            st.caption("Search terms used when scraping YouTube.")
             yt_queries = list(disc.get("youtube_queries", []))
             yt_selected = st.multiselect(
-                "Queries to use",
+                "Select queries for this search",
                 options=yt_queries,
                 default=yt_queries,
                 key="cs_yt_select",
-                label_visibility="collapsed",
+                label_visibility="visible",
+                help="Multi-select. Used when you click Scrape or Generate.",
             )
-            new_yt = [q for q in yt_queries if q in yt_selected]
+            if yt_queries:
+                st.caption(f"✓ {len(yt_selected)} of {len(yt_queries)} selected")
+            _yt_ok = st.button("✓ Apply selection", key="cs_yt_ok", help="Confirm your YouTube query selection")
+            if _yt_ok:
+                st.toast(f"YouTube: {len(yt_selected)} queries selected")
+                st.rerun()
 
-            new_q = st.text_input("Add YouTube query", key="cs_add_yt", placeholder="e.g. life hack shorts")
+            st.caption("_Manage library_")
+            new_q = st.text_input("Add YouTube query", key="cs_add_yt", placeholder="e.g. life hack shorts", label_visibility="collapsed")
             if new_q and st.button("Add query", key="cs_add_yt_btn"):
                 new_yt = list(yt_queries) + [new_q.strip()]
                 _save_discovery_criteria(cfg, new_yt, disc.get("tiktok_hashtags", []))
@@ -102,18 +109,24 @@ def render():
 
         with col_tt:
             st.markdown("**TikTok Hashtags**")
-            st.caption("Hashtags used when scraping TikTok.")
             tt_tags = [t if isinstance(t, str) else str(t) for t in disc.get("tiktok_hashtags", [])]
             tt_selected = st.multiselect(
-                "Hashtags to use",
+                "Select hashtags for this search",
                 options=tt_tags,
                 default=tt_tags,
                 key="cs_tt_select",
-                label_visibility="collapsed",
+                label_visibility="visible",
+                help="Multi-select. Used when you click Scrape or Generate.",
             )
-            new_tt = [t for t in tt_tags if t in tt_selected]
+            if tt_tags:
+                st.caption(f"✓ {len(tt_selected)} of {len(tt_tags)} selected")
+            _tt_ok = st.button("✓ Apply selection", key="cs_tt_ok", help="Confirm your TikTok hashtag selection")
+            if _tt_ok:
+                st.toast(f"TikTok: {len(tt_selected)} hashtags selected")
+                st.rerun()
 
-            new_tag = st.text_input("Add TikTok hashtag", key="cs_add_tt", placeholder="e.g. #trending")
+            st.caption("_Manage library_")
+            new_tag = st.text_input("Add TikTok hashtag", key="cs_add_tt", placeholder="e.g. #trending", label_visibility="collapsed")
             if new_tag and st.button("Add hashtag", key="cs_add_tt_btn"):
                 ht = new_tag.strip() if new_tag.strip().startswith("#") else f"#{new_tag.strip()}"
                 new_tt = list(tt_tags) + [ht]
@@ -153,7 +166,8 @@ def render():
                 selected_cats.append(cat)
 
         if st.button("Save Search Criteria", type="primary"):
-            _save_discovery_criteria(cfg, new_yt, new_tt, selected_cats)
+            # Save full tag library (yt_queries, tt_tags), not selection — selection is per-run only
+            _save_discovery_criteria(cfg, yt_queries, tt_tags, selected_cats)
             st.toast("Search criteria saved!")
             st.rerun()
 
@@ -169,8 +183,11 @@ def render():
         scrape_platform = st.selectbox("Scrape from", ["both", "youtube", "tiktok"], key="cs_scrape_platform", help="Platforms to scrape")
     with col_scrape:
         if st.button("Scrape Now", type="primary", disabled=runner.is_running, help="Scrape trends only; run Generate to create scripts"):
-            _save_discovery_criteria(cfg, new_yt, new_tt, selected_cats)
+            _save_discovery_criteria(cfg, yt_queries, tt_tags, selected_cats)
             extra = ["--platform", scrape_platform] if scrape_platform != "both" else []
+            # Pass selected tags (empty = use none for this run; omit = use full config)
+            extra.extend(["--youtube-queries", ",".join(yt_selected)])
+            extra.extend(["--tiktok-hashtags", ",".join(tt_selected)])
             runner.start("discovery", extra)
             st.toast("Discovery started!")
             st.rerun()
@@ -180,12 +197,14 @@ def render():
         count = st.slider("Count", 1, 10, int(cfg.get("ideation", {}).get("scripts_per_batch", 5)), key="cs_count")
     with col_gen3:
         if st.button("Generate", type="primary", disabled=runner.is_running, help="Scrape + ideate + source + compose"):
-            _save_discovery_criteria(cfg, new_yt, new_tt, selected_cats)
+            _save_discovery_criteria(cfg, yt_queries, tt_tags, selected_cats)
             extra = ["--count", str(count)]
             if category != "auto (from trends)":
                 extra.extend(["--category", category])
             if scrape_platform != "both":
                 extra.extend(["--platform", scrape_platform])
+            extra.extend(["--youtube-queries", ",".join(yt_selected)])
+            extra.extend(["--tiktok-hashtags", ",".join(tt_selected)])
             runner.start("full_pipeline", extra)
             st.toast("Pipeline started!")
             st.rerun()
@@ -221,26 +240,14 @@ def render():
                     st.session_state["_cs_stop_confirm"] = True
                     st.rerun()
 
-    if runner.is_running:
-        with st.expander("Live Log", expanded=True):
-            # Fragment updates log every 5s without full page rerun (avoids pulsing)
-            @st.fragment(run_every=5)
-            def _live_log():
-                r = get_runner()
-                was_running = st.session_state.get("content_last_running", False)
-                st.session_state["content_last_running"] = r.is_running
-                if r.is_running:
-                    st.caption(f"Running... {r.elapsed} — auto-refreshing every 5s")
-                    static_log_viewer(task_name=None, lines=40)
-                elif r.status in ("completed", "failed") and r.log_path and r.log_path.exists():
-                    st.caption(f"Finished: {r.status} ({r.elapsed})")
-                    static_log_viewer(task_name=None, lines=40)
-                    if was_running:
-                        st.session_state.pop("content_last_running", None)
-                        st.rerun()
-            _live_log()
-    else:
-        st.session_state.pop("content_last_running", None)
+    with st.expander("Live Log", expanded=runner.is_running):
+        if runner.is_running:
+            st.caption(f"Running... {runner.elapsed} — click **Refresh** for latest")
+        elif runner.status in ("completed", "failed") and runner.log_path and runner.log_path.exists():
+            st.caption(f"Finished: {runner.status} ({runner.elapsed})")
+        static_log_viewer(task_name=None, lines=40)
+        if st.button("Refresh", key="cs_log_refresh", help="Update log and page status"):
+            st.rerun()
 
     st.divider()
 
@@ -431,7 +438,7 @@ def render():
                 default_videos = [k for k in video_opts.keys() if Path(k).name in sel_vid_names]
                 default_images = [k for k in image_opts.keys() if Path(k).name in sel_img_names]
                 if not user_videos and not user_images:
-                    st.caption("Add videos to assets/stock_footage/user/ and images to assets/images/user/ to select.")
+                    st.caption("Add videos to assets/stock_footage/user/, images to assets/images/user/, and music to assets/music/user/ to select or auto-score.")
                 chosen_videos = st.multiselect(
                     "Videos (order = segment order)",
                     options=list(video_opts.keys()),

@@ -23,16 +23,15 @@ import requests as http_requests
 from models.config import get as cfg
 from models.database import get_connection, insert_asset, get_rejection_penalty, PENALTY_PER_REJECTION
 
-# Topic modifiers for music search (when script inspired by gaming/roblox trends)
-TOPIC_MUSIC_MODIFIERS = {
-    "gaming": ["gaming", "game"],
-    "roblox": ["playful", "roblox"],
-}
+# Topic modifiers for music search. Empty — no static topics; user discovery queries drive trends.
+TOPIC_MUSIC_MODIFIERS: dict[str, list[str]] = {}
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 MUSIC_DIR = PROJECT_ROOT / "assets" / "music"
+USER_MUSIC_DIR = MUSIC_DIR / "user"
+USER_AUDIO_EXTENSIONS = (".mp3", ".m4a", ".ogg", ".wav")
 
 CATEGORY_MUSIC_MAP = {
     "motivational": {
@@ -240,7 +239,7 @@ def _load_music_meta(path: Path) -> dict:
         return {}
 
 
-def _local_path_to_candidate(path: Path) -> dict:
+def _local_path_to_candidate(path: Path, source: str = "local") -> dict:
     """Convert a local file path to the same candidate format as online for unified scoring."""
     stem = path.stem.lower()
     searchable = stem
@@ -253,12 +252,24 @@ def _local_path_to_candidate(path: Path) -> dict:
         if mood:
             searchable += " " + str(mood).lower()
     return {
-        "source": "local",
+        "source": source,
         "title": path.name,
         "searchable_text": searchable.strip(),
         "path": path,
         "raw": path,
     }
+
+
+def _scan_user_audio() -> list[dict]:
+    """Scan assets/music/user/, return list of candidate dicts with source='user'."""
+    candidates = []
+    if not USER_MUSIC_DIR.exists():
+        return candidates
+    for p in USER_MUSIC_DIR.iterdir():
+        if p.is_file() and p.suffix.lower() in USER_AUDIO_EXTENSIONS:
+            c = _local_path_to_candidate(p, source="user")
+            candidates.append(c)
+    return candidates
 
 
 def _score_music_candidate(
@@ -294,6 +305,7 @@ def _ensure_dirs():
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
     for mood in ("uplifting", "funny", "quirky", "dramatic", "chill", "general"):
         (MUSIC_DIR / mood).mkdir(exist_ok=True)
+    USER_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _safe_filename(title: str) -> str:
@@ -599,7 +611,14 @@ def _collect_all_music_candidates(
     candidates: list[dict] = []
     seen: set[tuple[str, str]] = set()
 
-    # 1. Add all local tracks as candidates
+    # 1. Add user audio from assets/music/user/ (same scoring as local, source='user')
+    for c in _scan_user_audio():
+        key = ("user", str(c.get("path", "")))
+        if key not in seen:
+            seen.add(key)
+            candidates.append(c)
+
+    # 2. Add all local tracks (mood subdirs) as candidates
     library = scan_local_library()
     for mood_name, paths in library.items():
         for p in paths:
@@ -609,7 +628,7 @@ def _collect_all_music_candidates(
                 seen.add(key)
                 candidates.append(c)
 
-    # 2. Search YouTube
+    # 3. Search YouTube
     for query in queries[:6]:
         logger.info("Searching YouTube for music: '%s'", query)
         for entry in _search_youtube_music(query, max_results=5):
@@ -619,7 +638,7 @@ def _collect_all_music_candidates(
                 candidates.append(c)
         time.sleep(1)
 
-    # 3. Search Freesound
+    # 4. Search Freesound
     if freesound_tags:
         fs_results = _search_freesound(freesound_tags[:5], max_results=10)
         for entry in fs_results:
@@ -628,7 +647,7 @@ def _collect_all_music_candidates(
                 seen.add((c["source"], c["url_or_id"]))
                 candidates.append(c)
 
-    # 4. Search Openverse
+    # 5. Search Openverse
     ov_queries = [q.replace(" no copyright", "").replace(" royalty free", "") for q in queries[:4]]
     for query in ov_queries:
         ov_results = _search_openverse_music(query, mood, max_results=5)
@@ -694,9 +713,9 @@ def scan_local_library() -> dict[str, list[Path]]:
     _ensure_dirs()
     library = {}
 
-    # Scan mood subdirectories
+    # Scan mood subdirectories (exclude "user" — handled by _scan_user_audio)
     for mood_dir in MUSIC_DIR.iterdir():
-        if mood_dir.is_dir() and mood_dir.name != "__pycache__":
+        if mood_dir.is_dir() and mood_dir.name not in ("__pycache__", "user"):
             tracks = list(mood_dir.glob("*.mp3"))
             if tracks:
                 library[mood_dir.name] = tracks
@@ -809,36 +828,16 @@ def ensure_music_for_category(category: str, min_tracks: int = 2) -> list[Path]:
 
 # --- Integration with sourcing pipeline ---
 
-def source_music_for_script(
-    script_id: int,
-    category: str,
-    tags: list[str] | None = None,
-    trend_topic: str | None = None,
-    script_keywords: list[str] | None = None,
+def _select_track_from_candidates(
+    candidates: list[dict],
+    mood_dir: Path,
 ) -> Path | None:
-    """Full music sourcing pipeline for a script:
-    1. Scrape BOTH local library and online sources (YouTube, Freesound, Openverse)
-    2. Score all candidates together by relevance (mood, script keywords, category)
-    3. Select the best-scoring track
-    4. If best is online, download it; if local, use directly
-    5. Insert asset record into database
-    """
-    candidates = _collect_all_music_candidates(
-        category, script_keywords=script_keywords, trend_topic=trend_topic
-    )
-    if not candidates:
-        logger.warning("No music candidates found for script #%d (category: %s)", script_id, category)
-        return None
-
-    music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
-    mood_dir = MUSIC_DIR / music_config["mood"]
-    track_path = None
-
+    """Pick best candidate and download if online. Returns local path or None."""
     for best in candidates:
-        if best["source"] == "local":
+        if best["source"] in ("local", "user"):
             track_path = best["path"]
-            logger.info("Music: selected local (score %.1f) — %s", best["_score"], track_path.name)
-            break
+            logger.info("Music: selected %s (score %.1f) — %s", best["source"], best["_score"], track_path.name)
+            return track_path
         raw = best["raw"]
         if best["source"] == "youtube":
             video_id = raw.get("id", "")
@@ -849,25 +848,92 @@ def source_music_for_script(
                 track_path = final_path
             else:
                 url = raw.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
-                if _download_audio(url, dest_stem):
-                    track_path = final_path
+                track_path = final_path if _download_audio(url, dest_stem) else None
         elif best["source"] == "freesound":
             track_path = _download_freesound_preview(raw, mood_dir)
         elif best["source"] == "openverse":
             track_path = _download_openverse_audio(raw, mood_dir)
+        else:
+            track_path = None
         if track_path:
             logger.info("Music: selected online %s (score %.1f) — %s", best["source"], best["_score"], track_path.name)
-            break
+            return track_path
+    return None
 
-    if not track_path:
-        logger.warning("Could not source music for script #%d (category: %s)", script_id, category)
+
+def _try_suno_generate(
+    script_id: int,
+    category: str,
+    mood_dir: Path,
+    music_config: dict,
+    tags: list | None,
+    trend_topic: str | None,
+    script_keywords: list | None,
+) -> Path | None:
+    """Attempt Suno generation. Returns track path on success, None on failure."""
+    suno_key = cfg("sourcing.music.suno_api_key") or ""
+    if not suno_key or suno_key.startswith("YOUR_"):
         return None
+    from agents.suno_client import (
+        _build_suno_prompt,
+        _build_suno_style,
+        _build_suno_title,
+        generate_music,
+    )
+    prompt_override = (cfg("sourcing.music.suno_prompt_override") or "").strip()
+    prompt = (
+        prompt_override
+        if prompt_override
+        else _build_suno_prompt(category, script_keywords=script_keywords, tags=tags, trend_topic=trend_topic)
+    )
+    style_override = (cfg("sourcing.music.suno_style_override") or "").strip()
+    style = style_override if style_override else _build_suno_style(category)
+    title_override = (cfg("sourcing.music.suno_title_override") or "").strip()
+    title = title_override if title_override else _build_suno_title(music_config["mood"])
+    exclusion = (cfg("sourcing.music.suno_exclusion_override") or "").strip()
+    weirdness_raw = cfg("sourcing.music.suno_weirdness")
+    weirdness = float(weirdness_raw) / 100.0 if weirdness_raw is not None else 0.5
+    style_weight_raw = cfg("sourcing.music.suno_style_weight")
+    style_weight = float(style_weight_raw) / 100.0 if style_weight_raw is not None else 0.65
+    dest_path = mood_dir / f"suno_{uuid.uuid4().hex[:12]}.mp3"
+    track_path = generate_music(
+        prompt,
+        api_key=suno_key,
+        model=cfg("sourcing.music.suno_model") or "V4_5ALL",
+        instrumental=cfg("sourcing.music.suno_instrumental") is not False,
+        custom_mode=cfg("sourcing.music.suno_custom_mode") is True,
+        style=style,
+        title=title,
+        negative_tags=exclusion,
+        weirdness=weirdness,
+        style_weight=style_weight,
+        dest_path=dest_path,
+    )
+    if track_path and track_path.exists():
+        conn = get_connection()
+        insert_asset(
+            conn,
+            script_id=script_id,
+            asset_type="music",
+            source="suno",
+            source_id=track_path.stem,
+            local_path=str(track_path),
+            mood=music_config["mood"],
+        )
+        conn.close()
+        logger.info("Music sourced for script #%d via Suno: %s", script_id, track_path.name)
+        return track_path
+    return None
 
-    # Record in database
+
+def _insert_music_asset(script_id: int, track_path: Path, category: str) -> None:
+    """Insert a stock music asset record."""
     music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
     conn = get_connection()
     src = "local"
-    if "yt_" in track_path.name:
+    if track_path.parent == USER_MUSIC_DIR:
+        src = "user"
+    elif "yt_" in track_path.name:
         src = "youtube"
     elif "fs_" in track_path.name:
         src = "freesound"
@@ -886,6 +952,86 @@ def source_music_for_script(
     )
     conn.close()
 
+
+def source_music_for_script(
+    script_id: int,
+    category: str,
+    tags: list[str] | None = None,
+    trend_topic: str | None = None,
+    script_keywords: list[str] | None = None,
+    force_ai_audio: bool = False,
+) -> Path | None:
+    """Full music sourcing pipeline:
+    1. If force_ai_audio: try Suno first; on failure fall back to stock.
+    2. Else: collect and score stock candidates. If best score >= threshold, use stock (skip Suno).
+    3. Else: try Suno; on failure use best stock.
+    4. On any Suno failure, fall back to stock pipeline.
+    """
+    music_config = CATEGORY_MUSIC_MAP.get(category, CATEGORY_MUSIC_MAP["storytime"])
+    mood_dir = MUSIC_DIR / music_config["mood"]
+    suno_enabled = cfg("sourcing.music.suno_enabled") is True
+    threshold = float(cfg("sourcing.music.stock_score_threshold") or 0.5)
+
+    # --- force_ai_audio: Suno first, fallback to stock on failure ---
+    if force_ai_audio and suno_enabled:
+        track_path = _try_suno_generate(
+            script_id, category, mood_dir, music_config,
+            tags=tags, trend_topic=trend_topic, script_keywords=script_keywords,
+        )
+        if track_path:
+            return track_path
+        logger.warning("Suno music generation failed, falling back to stock")
+        candidates = _collect_all_music_candidates(
+            category, script_keywords=script_keywords, trend_topic=trend_topic
+        )
+        if not candidates:
+            logger.warning("No music candidates found for script #%d (category: %s)", script_id, category)
+            return None
+        track_path = _select_track_from_candidates(candidates, mood_dir)
+        if track_path:
+            _insert_music_asset(script_id, track_path, category)
+        return track_path
+
+    # --- Stock-first: collect, score, decide Suno vs stock ---
+    candidates = _collect_all_music_candidates(
+        category, script_keywords=script_keywords, trend_topic=trend_topic
+    )
+
+    # No stock candidates: try Suno if enabled, else give up
+    if not candidates:
+        if suno_enabled:
+            return _try_suno_generate(
+                script_id, category, mood_dir, music_config,
+                tags=tags, trend_topic=trend_topic, script_keywords=script_keywords,
+            )
+        logger.warning("No music candidates found for script #%d (category: %s)", script_id, category)
+        return None
+
+    best_score = candidates[0]["_score"]
+
+    # Best stock meets threshold: use stock, skip Suno
+    if best_score >= threshold:
+        logger.info("Music: using stock (score %.1f >= threshold %.1f), skipping Suno", best_score, threshold)
+        track_path = _select_track_from_candidates(candidates, mood_dir)
+        if track_path:
+            _insert_music_asset(script_id, track_path, category)
+        return track_path
+
+    # Best stock below threshold: try Suno, fallback to stock on failure
+    if suno_enabled:
+        track_path = _try_suno_generate(
+            script_id, category, mood_dir, music_config,
+            tags=tags, trend_topic=trend_topic, script_keywords=script_keywords,
+        )
+        if track_path:
+            return track_path
+        logger.warning("Suno music generation failed, falling back to stock")
+
+    track_path = _select_track_from_candidates(candidates, mood_dir)
+    if not track_path:
+        logger.warning("Could not source music for script #%d (category: %s)", script_id, category)
+        return None
+    _insert_music_asset(script_id, track_path, category)
     logger.info("Music sourced for script #%d: %s", script_id, track_path.name)
     return track_path
 

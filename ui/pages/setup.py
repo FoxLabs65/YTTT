@@ -245,7 +245,14 @@ def render():
         available_voices = _get_voice_list()
         st.caption("Select a voice for each content category.")
 
-        for cat in ["motivational", "funny", "meme", "news", "storytime", "howto", "pov"]:
+        # Always show all supported categories (not just ideation.categories) so users can
+        # configure voices for every category. Merge: ideation categories + existing
+        # voiceover_voices keys + canonical list.
+        ideation_cats = set(cfg.get("ideation", {}).get("categories") or [])
+        existing_voices = set((cfg.get("sourcing", {}).get("voiceover_voices") or {}).keys())
+        canonical = ["motivational", "funny", "meme", "news", "storytime", "howto", "pov", "reaction"]
+        voice_cats = list(dict.fromkeys(canonical + [c for c in ideation_cats | existing_voices if c not in canonical]))
+        for cat in voice_cats:
             current = voices_map.get(cat, "en-US-AndrewMultilingualNeural")
             idx = available_voices.index(current) if current in available_voices else 0
             val = st.selectbox(f"{cat.title()} voice", available_voices, index=idx, key=f"cfg_voice_{cat}")
@@ -294,6 +301,104 @@ These would require custom integration. Edge-TTS is free and works out of the bo
         )
         sourcing["voiceover_rate"] = f"{val:+d}%"
 
+    # ── Suno AI Music ───────────────────────────────────────────
+    with st.expander("Suno AI Music"):
+        st.caption("Generate background music with Suno AI. Uses script metadata when custom prompt is empty.")
+        music = cfg.get("sourcing", {}).get("music") or {}
+        if not isinstance(music, dict):
+            music = {}
+        if "sourcing" not in cfg:
+            cfg["sourcing"] = {}
+        if "music" not in cfg["sourcing"]:
+            cfg["sourcing"]["music"] = {}
+
+        suno_key = st.text_input(
+            "Suno API Key",
+            value=music.get("suno_api_key", ""),
+            type="password",
+            key="cfg_suno_key",
+            help="Get key at https://sunoapi.org",
+        )
+        _set(cfg, "sourcing.music.suno_api_key", suno_key)
+
+        val = st.checkbox("Enable Suno", value=music.get("suno_enabled") is True, key="cfg_suno_enabled")
+        _set(cfg, "sourcing.music.suno_enabled", val)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            model_opts = ["V4", "V4_5", "V4_5PLUS", "V4_5ALL", "V5"]
+            current = music.get("suno_model", "V4_5ALL")
+            idx = model_opts.index(current) if current in model_opts else 3
+            val = st.selectbox("Model", model_opts, index=idx, key="cfg_suno_model")
+            _set(cfg, "sourcing.music.suno_model", val)
+            val = st.checkbox("Instrumental only", value=music.get("suno_instrumental", True), key="cfg_suno_instrumental")
+            _set(cfg, "sourcing.music.suno_instrumental", val)
+            val = st.checkbox("Custom mode", value=music.get("suno_custom_mode") is True, key="cfg_suno_custom_mode")
+            _set(cfg, "sourcing.music.suno_custom_mode", val)
+        with col2:
+            w_val = int(music.get("suno_weirdness", 50))
+            val = st.slider("Weirdness (0-100)", 0, 100, w_val, key="cfg_suno_weirdness")
+            _set(cfg, "sourcing.music.suno_weirdness", val)
+            sw_val = int(music.get("suno_style_weight", 65))
+            val = st.slider("Style weight (0-100)", 0, 100, sw_val, key="cfg_suno_style_weight")
+            _set(cfg, "sourcing.music.suno_style_weight", val)
+
+        val = st.text_area(
+            "Custom prompt",
+            value=music.get("suno_prompt_override", ""),
+            height=80,
+            key="cfg_suno_prompt",
+            help="Override auto prompt; leave empty to use script-derived prompt from mood, keywords, tags.",
+        )
+        _set(cfg, "sourcing.music.suno_prompt_override", val)
+
+        val = st.text_input(
+            "Style prompt",
+            value=music.get("suno_style_override", ""),
+            key="cfg_suno_style",
+            help="Genre/style (e.g. Cinematic orchestral); required in custom mode.",
+        )
+        _set(cfg, "sourcing.music.suno_style_override", val)
+
+        val = st.text_input(
+            "Title",
+            value=music.get("suno_title_override", ""),
+            key="cfg_suno_title",
+            help="Track title for custom mode; auto ShortsBg_{mood} if empty.",
+        )
+        _set(cfg, "sourcing.music.suno_title_override", val)
+
+        val = st.text_input(
+            "Exclusion prompt",
+            value=music.get("suno_exclusion_override", ""),
+            key="cfg_suno_exclusion",
+            help="Styles to exclude (e.g. Heavy Metal, Upbeat Drums).",
+        )
+        _set(cfg, "sourcing.music.suno_exclusion_override", val)
+
+        val = st.checkbox(
+            "Force AI audio (always use Suno, ignore stock)",
+            value=music.get("force_ai_audio") is True,
+            key="cfg_force_ai_audio",
+            help="When enabled, always try Suno first and skip stock scoring. Use to prefer AI-generated music.",
+        )
+        _set(cfg, "sourcing.music.force_ai_audio", val)
+
+        thresh_val = float(music.get("stock_score_threshold", 0.5))
+        val = st.number_input(
+            "Stock score threshold (0.0–1.0)",
+            min_value=0.0,
+            max_value=1.0,
+            value=thresh_val,
+            step=0.1,
+            key="cfg_stock_threshold",
+            help="If best stock score >= this, use stock and skip Suno. Lower = more likely to use Suno.",
+        )
+        _set(cfg, "sourcing.music.stock_score_threshold", val)
+
+        if st.button("Test Suno", key="test_suno"):
+            _test_suno(suno_key)
+
     # ── Video Composition ───────────────────────────────────────
     with st.expander("Video Composition"):
         composer = cfg.get("composer", {})
@@ -329,6 +434,16 @@ These would require custom integration. Edge-TTS is free and works out of the bo
         if not isinstance(upload, dict):
             upload = {}
             cfg["upload"] = upload
+
+        st.caption("Delay between uploads prevents YouTube/TikTok algorithm penalty. Scheduler never auto-uploads.")
+        val = st.number_input(
+            "Minutes between uploads",
+            0, 120,
+            int(upload.get("delay_minutes_between", 15)),
+            key="cfg_upload_delay",
+            help="Wait this long between each upload. Recommended 15–30.",
+        )
+        upload["delay_minutes_between"] = val
 
         yt = upload.get("youtube", {})
         if not isinstance(yt, dict):
@@ -572,6 +687,28 @@ def _test_unsplash(key: str):
             st.error(f"Unsplash: HTTP {r.status_code}")
     except Exception as e:
         st.error(f"Unsplash: {e}")
+
+
+def _test_suno(key: str):
+    if not key or key.startswith("YOUR_"):
+        st.error("No key configured")
+        return
+    try:
+        import requests
+        r = requests.get(
+            "https://api.sunoapi.org/api/v1/generate/record-info",
+            params={"taskId": "test_invalid_task"},
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=10,
+        )
+        if r.status_code == 401:
+            st.error("Suno: invalid API key")
+        elif r.status_code in (200, 400, 404):
+            st.success("Suno: connected")
+        else:
+            st.error(f"Suno: HTTP {r.status_code}")
+    except Exception as e:
+        st.error(f"Suno: {e}")
 
 
 def _render_api_key_instructions():

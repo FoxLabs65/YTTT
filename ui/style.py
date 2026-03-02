@@ -117,6 +117,37 @@ THEME_CSS = """
         right: 1rem;
         z-index: 9999;
     }
+
+    /* Tag selector panels - Search Criteria */
+    .tag-selector-panel {
+        background: linear-gradient(145deg, #1a1d24 0%, #15171c 100%);
+        border: 1px solid #2d3250;
+        border-radius: 10px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 0.75rem;
+    }
+    .tag-selector-panel label {
+        font-weight: 600 !important;
+        color: #e2e8f0 !important;
+    }
+    /* Multiselect dropdown - match dark theme */
+    [data-testid="stMultiSelect"] {
+        background: #0e1117 !important;
+    }
+    [data-testid="stMultiSelect"] div[data-baseweb="tag"] {
+        background: #2d3250 !important;
+        color: #e2e8f0 !important;
+        border-color: #4a69bd !important;
+    }
+    [data-testid="stMultiSelect"] > div {
+        border-radius: 8px !important;
+        border: 1px solid #2d3250 !important;
+        background: #1a1d24 !important;
+    }
+    [data-testid="stMultiSelect"]:focus-within > div {
+        border-color: #4a69bd !important;
+        box-shadow: 0 0 0 1px #4a69bd !important;
+    }
 </style>
 """
 

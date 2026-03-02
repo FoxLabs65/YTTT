@@ -70,6 +70,15 @@ def cmd_setup():
     else:
         logger.info("  Gemini (fallback): NOT SET — optional, get free key at https://aistudio.google.com/apikey")
 
+    sourcing_music = config.get("sourcing", {}).get("music", {}) or {}
+    suno_enabled = sourcing_music.get("suno_enabled") is True
+    suno_key = sourcing_music.get("suno_api_key", "")
+    if suno_enabled:
+        if _key_valid(suno_key):
+            logger.info("  Suno AI Music: OK")
+        else:
+            logger.info("  Suno AI Music: NOT CONFIGURED — add suno_api_key in Setup > Suno AI Music")
+
     if tiktok_keys_present and tiktok_enabled:
         try:
             from agents.tiktok_auth import has_tiktok_token
@@ -171,7 +180,14 @@ def _run_phase(name: str, fn, *args, retries: int | None = None, **kwargs) -> di
     return {"error": str(last_error), "attempts": retries}
 
 
-def cmd_run(category: str | None = None, count: int | None = None, max_retries: int | None = None, platform: str | None = None):
+def cmd_run(
+    category: str | None = None,
+    count: int | None = None,
+    max_retries: int | None = None,
+    platform: str | None = None,
+    youtube_queries: str | None = None,
+    tiktok_hashtags: str | None = None,
+):
     """Run the full content pipeline with retry logic and phase gating.
     Each phase retries up to max_retries times on failure (default from config).
     If a critical phase (discovery/ideation) produces no output after all
@@ -193,9 +209,15 @@ def cmd_run(category: str | None = None, count: int | None = None, max_retries: 
     logger.info("--- Phase 1: Trend Discovery ---")
     from agents.discovery import run_discovery
     disc_platforms = platform if platform and platform != "both" else None
+    yt_q = [q.strip() for q in (youtube_queries or "").split(",") if q.strip()] if isinstance(youtube_queries, str) else youtube_queries
+    tt_h = [h.strip() for h in (tiktok_hashtags or "").split(",") if h.strip()] if isinstance(tiktok_hashtags, str) else tiktok_hashtags
     results["discovery"] = _run_phase(
         "Discovery",
-        lambda: run_discovery(platforms=disc_platforms or "both"),
+        lambda: run_discovery(
+            platforms=disc_platforms or "both",
+            youtube_queries=yt_q if yt_q else None,
+            tiktok_hashtags=tt_h if tt_h else None,
+        ),
         retries=retries_arg,
     )
     logger.info("Discovery: %s", results["discovery"])
@@ -203,8 +225,14 @@ def cmd_run(category: str | None = None, count: int | None = None, max_retries: 
     # Phase 2: Ideation (critical -- scripts drive the rest of the pipeline)
     logger.info("--- Phase 2: Content Ideation ---")
     from agents.ideation import run_ideation
+    disc_queries = (yt_q or []) + (tt_h or [])
     results["ideation"] = _run_phase(
-        "Ideation", run_ideation, category=category, count=count,
+        "Ideation",
+        lambda: run_ideation(
+            category=category,
+            count=count,
+            discovery_queries=disc_queries if disc_queries else None,
+        ),
         retries=retries_arg,
     )
     logger.info("Ideation: %s", results["ideation"])
@@ -216,7 +244,12 @@ def cmd_run(category: str | None = None, count: int | None = None, max_retries: 
         logger.warning("Ideation produced 0 scripts — waiting %ds then retrying once more...", wait)
         time.sleep(wait)
         results["ideation"] = _run_phase(
-            "Ideation (bonus retry)", run_ideation, category=category, count=count,
+            "Ideation (bonus retry)",
+            lambda: run_ideation(
+                category=category,
+                count=count,
+                discovery_queries=disc_queries if disc_queries else None,
+            ),
             retries=retries_arg or 2,
         )
         logger.info("Ideation (retry): %s", results["ideation"])
@@ -257,17 +290,22 @@ def cmd_run(category: str | None = None, count: int | None = None, max_retries: 
         _send_notification("Pipeline finished but produced no new videos. Check logs for errors.")
 
 
-def cmd_upload(platform: str | None = None):
-    """Upload all approved videos. If platform is 'youtube' or 'tiktok', upload only to that platform."""
+def cmd_upload(platform: str | None = None, upload_ids: list[int] | None = None):
+    """Upload selected approved videos. Requires upload_ids (select in Uploads page)."""
     from models.database import init_db
     init_db()
     from agents.uploader import run_uploads
-    result = run_uploads(platform=platform)
+    result = run_uploads(platform=platform, upload_ids=upload_ids)
     logger.info("Upload result: %s", result)
 
 
-def cmd_regenerate(script_id: int, voice: str | None = None, music_path: str | None = None):
-    """Regenerate a single video with optional voice and music overrides."""
+def cmd_regenerate(
+    script_id: int,
+    voice: str | None = None,
+    music_path: str | None = None,
+    force_ai_audio: bool = False,
+):
+    """Regenerate a single video with optional voice, music, and force-AI-audio overrides."""
     from models.database import init_db, get_connection
     from agents.sourcing import run_sourcing
     from agents.composer import run_composer
@@ -286,12 +324,19 @@ def cmd_regenerate(script_id: int, voice: str | None = None, music_path: str | N
         conn.execute("DELETE FROM uploads WHERE video_id = ?", (vid,))
     conn.execute("DELETE FROM videos WHERE script_id = ?", (script_id,))
     conn.execute("DELETE FROM assets WHERE script_id = ?", (script_id,))
-    conn.execute("UPDATE scripts SET voice_override = ?, music_override_path = ?, status = ? WHERE id = ?",
-                 (voice or None, music_path or None, "pending_assets", script_id))
+
+    # When force_ai_audio, clear music_override_path so sourcing runs with force_ai
+    final_music = None if force_ai_audio else (music_path or None)
+    force_ai_val = 1 if force_ai_audio else 0
+    conn.execute(
+        "UPDATE scripts SET voice_override = ?, music_override_path = ?, force_ai_audio_override = ?, status = ? WHERE id = ?",
+        (voice or None, final_music, force_ai_val, "pending_assets", script_id),
+    )
     conn.commit()
     conn.close()
 
-    logger.info("Regenerating script #%d (voice=%s, music=%s)", script_id, voice or "default", music_path or "default")
+    music_desc = "force AI" if force_ai_audio else (music_path or "default")
+    logger.info("Regenerating script #%d (voice=%s, music=%s)", script_id, voice or "default", music_desc)
     _run_phase("Sourcing", run_sourcing, retries=2)
     _run_phase("Composer", run_composer, retries=2)
     logger.info("Regenerate complete for script #%d", script_id)
@@ -527,7 +572,11 @@ def main():
     parser.add_argument("--script-id", type=int, help="Script ID for regenerate")
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
     parser.add_argument("--music-path", type=str, help="Music file path override for regenerate")
+    parser.add_argument("--force-ai-audio", action="store_true", help="Force AI-generated music (Suno) for regenerate")
     parser.add_argument("--platform", type=str, choices=["youtube", "tiktok", "both"], help="Discovery: scrape youtube, tiktok, or both. Upload: youtube or tiktok only.")
+    parser.add_argument("--youtube-queries", type=str, help="Comma-separated YouTube queries for discovery (overrides config for this run)")
+    parser.add_argument("--tiktok-hashtags", type=str, help="Comma-separated TikTok hashtags for discovery (overrides config for this run)")
+    parser.add_argument("--upload-ids", type=str, help="Comma-separated upload IDs to upload (required; select in Uploads page)")
     parser.add_argument("--category", type=str, help="Script category for ideation (motivational/funny/meme/news/storytime/howto/pov)")
     parser.add_argument("--count", type=int, help="Number of scripts to generate")
     parser.add_argument("--retries", type=int, help="Override max retries per phase (default: from config or 3)")
@@ -541,13 +590,27 @@ def main():
         init_db()
         logger.info("--- Discovery Only ---")
         from agents.discovery import run_discovery
-        result = run_discovery(platforms=args.platform or "both")
+        yt_q = [q.strip() for q in (args.youtube_queries or "").split(",") if q.strip()]
+        tt_h = [h.strip() for h in (args.tiktok_hashtags or "").split(",") if h.strip()]
+        result = run_discovery(
+            platforms=args.platform or "both",
+            youtube_queries=yt_q if yt_q else None,
+            tiktok_hashtags=tt_h if tt_h else None,
+        )
         logger.info("Discovery: %s", result)
     elif args.run:
-        cmd_run(category=args.category, count=args.count, max_retries=args.retries, platform=args.platform)
+        cmd_run(
+            category=args.category,
+            count=args.count,
+            max_retries=args.retries,
+            platform=args.platform,
+            youtube_queries=args.youtube_queries,
+            tiktok_hashtags=args.tiktok_hashtags,
+        )
     elif args.upload:
         upload_platform = None if (args.platform is None or args.platform == "both") else args.platform
-        cmd_upload(platform=upload_platform)
+        uids = [int(x.strip()) for x in (args.upload_ids or "").split(",") if x.strip()]
+        cmd_upload(platform=upload_platform, upload_ids=uids if uids else None)
     elif args.cleanup:
         cmd_cleanup()
     elif args.music:
@@ -560,7 +623,12 @@ def main():
         if not args.script_id:
             logger.error("--regenerate requires --script-id")
             sys.exit(1)
-        cmd_regenerate(args.script_id, voice=args.voice, music_path=args.music_path)
+        cmd_regenerate(
+            args.script_id,
+            voice=args.voice,
+            music_path=args.music_path,
+            force_ai_audio=args.force_ai_audio,
+        )
     elif args.reaction_discovery:
         from agents.reaction_sourcing import discover_candidates
         logger.info("--- Reaction Discovery (human review required) ---")

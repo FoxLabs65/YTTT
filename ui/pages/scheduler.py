@@ -95,6 +95,8 @@ def render():
 
     st.write("")
 
+    st.caption("Note: The scheduler runs discovery, ideation, sourcing, composing, and cleanup. **Uploads are never automatic** — select videos in the Uploads tab to avoid algorithm penalty.")
+
     # ── General Settings ────────────────────────────────────────
     col_tz, col_vpr = st.columns(2)
 

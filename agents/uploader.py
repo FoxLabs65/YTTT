@@ -283,27 +283,61 @@ def _archive_video(video_path: str):
         logger.info("Archived: %s -> published/", src.name)
 
 
-def run_uploads(platform: str | None = None) -> dict:
-    """Upload all pending approved videos. If platform is 'youtube' or 'tiktok', upload only to that platform."""
-    logger.info("Starting uploads%s...", f" ({platform})" if platform else "")
+def run_uploads(
+    platform: str | None = None,
+    upload_ids: list[int] | None = None,
+) -> dict:
+    """Upload selected pending videos. Requires upload_ids to avoid mass-upload algorithm penalty.
+    If upload_ids is empty/None, uploads nothing (safety: no automatic mass upload).
+    Delay between uploads is configurable (upload.delay_minutes_between)."""
+    if not upload_ids:
+        logger.warning(
+            "No upload IDs specified. Select videos in the Uploads page to upload. "
+            "Mass upload is disabled to protect channel algorithm ranking."
+        )
+        return {
+            "youtube_uploaded": 0,
+            "youtube_total": 0,
+            "tiktok_uploaded": 0,
+            "tiktok_total": 0,
+        }
+    logger.info("Starting uploads (selected %d)%s...", len(upload_ids), f" ({platform})" if platform else "")
     conn = get_connection()
 
-    yt_uploads = get_pending_uploads(conn, platform="youtube") if platform in (None, "youtube") else []
-    tt_uploads = get_pending_uploads(conn, platform="tiktok") if platform in (None, "tiktok") else []
+    yt_uploads = (
+        get_pending_uploads(conn, platform="youtube", upload_ids=upload_ids)
+        if platform in (None, "youtube")
+        else []
+    )
+    tt_uploads = (
+        get_pending_uploads(conn, platform="tiktok", upload_ids=upload_ids)
+        if platform in (None, "tiktok")
+        else []
+    )
     conn.close()
+
+    delay_min = max(0, int(cfg("upload.delay_minutes_between") or 15))
+    delay_sec = delay_min * 60
 
     yt_success = 0
     tt_success = 0
+    total_uploaded = 0
 
     for upload in yt_uploads:
         if upload_to_youtube(upload):
             yt_success += 1
-            time.sleep(2)
+            total_uploaded += 1
+            if total_uploaded < len(yt_uploads) + len(tt_uploads) and delay_sec > 0:
+                logger.info("Waiting %d min before next upload (algorithm-safe spacing)...", delay_min)
+                time.sleep(delay_sec)
 
     for upload in tt_uploads:
         if upload_to_tiktok(upload):
             tt_success += 1
-            time.sleep(2)
+            total_uploaded += 1
+            if total_uploaded < len(yt_uploads) + len(tt_uploads) and delay_sec > 0:
+                logger.info("Waiting %d min before next upload (algorithm-safe spacing)...", delay_min)
+                time.sleep(delay_sec)
 
     # Mark fully uploaded videos and archive
     conn = get_connection()

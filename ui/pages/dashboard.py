@@ -92,10 +92,8 @@ def render():
             runner.start("full_pipeline")
             st.toast("Pipeline started!")
             st.rerun()
-        if st.button("Upload Approved", disabled=runner.is_running, width="stretch"):
-            runner.start("upload")
-            st.toast("Upload started!")
-            st.rerun()
+        if st.button("Go to Uploads", width="stretch", help="Select videos to upload (prevents mass-upload algorithm penalty)"):
+            st.switch_page("uploads")
         if st.button("Run Cleanup", disabled=runner.is_running, width="stretch"):
             runner.start("cleanup")
             st.toast("Cleanup started!")
@@ -169,11 +167,7 @@ def render():
 
     conn.close()
 
-    # Auto-refresh every 5s when any task is running (must be last so page renders first)
-    @st.fragment(run_every=5)
-    def _dashboard_refresh():
-        r = get_runner()
-        if r.is_running:
+    # Refresh button when task is running (run_every fragment removed to avoid "fragment does not exist" errors)
+    if runner.is_running:
+        if st.button("Refresh", key="dash_refresh", help="Update page with latest status"):
             st.rerun()
-
-    _dashboard_refresh()

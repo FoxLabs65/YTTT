@@ -20,6 +20,7 @@ from models.database import (
     get_top_tags,
     get_rejected_trend_ids,
     get_rejection_guidance_for_category,
+    get_recent_script_titles,
     insert_script,
 )
 
@@ -172,6 +173,7 @@ def generate_scripts(
     count: int | None = None,
     trends: list[dict] | None = None,
     tags: list[dict] | None = None,
+    discovery_queries: list[str] | None = None,
 ) -> list[dict]:
     """Generate video scripts using Claude Pro (with Gemini fallback)."""
     count = count or cfg("ideation.scripts_per_batch") or 5
@@ -184,9 +186,14 @@ def generate_scripts(
     if not trends:
         excluded = get_rejected_trend_ids(conn)
         exclude_list = list(excluded) if excluded else None
-        trends = get_top_trends(conn, limit=20, exclude_trend_ids=exclude_list)
+        # When category specified (not random), prefer trends matching that category
+        cat_filter = category if category and category != "random" else None
+        trends = get_top_trends(
+            conn, limit=20, exclude_trend_ids=exclude_list, category_filter=cat_filter
+        )
     if not tags:
         tags = get_top_tags(conn, limit=30)
+    recent_titles = get_recent_script_titles(conn, hours=72)
     conn.close()
 
     if not trends and not tags:
@@ -200,6 +207,22 @@ def generate_scripts(
         .replace("{n}", str(count))
         .replace("{category}", category)
     )
+    # Topic deduplication: avoid generating near-duplicate topics recently created
+    if recent_titles:
+        avoid_block = (
+            "AVOID generating scripts on the same or very similar topics as these recently generated titles. "
+            "Create distinctly different content:\n"
+            + "\n".join(f"  - {t}" for t in recent_titles[:15])
+        )
+        prompt = f"{avoid_block}\n\n{prompt}"
+    # Discovery alignment: when user selected specific search tags, bias toward them
+    if discovery_queries:
+        hint = (
+            "The user searched for these topics: "
+            + ", ".join(repr(q) for q in discovery_queries[:15])
+            + ". When relevant, prefer script ideas that align with these search topics."
+        )
+        prompt = f"{hint}\n\n{prompt}"
     # Prepend rejection guidance if enabled
     if cfg("ideation.rejection_guidance", True):
         conn = get_connection()
@@ -322,15 +345,25 @@ def _parse_json_array(text: str) -> list[str] | None:
     return None
 
 
-def run_ideation(category: str | None = None, count: int | None = None) -> dict:
+def run_ideation(
+    category: str | None = None,
+    count: int | None = None,
+    discovery_queries: list[str] | None = None,
+) -> dict:
     """Run ideation pipeline. Returns summary dict.
     Raises RuntimeError on LLM failures so the pipeline retry wrapper can retry.
+    discovery_queries: optional list of YouTube queries / TikTok hashtags the user searched;
+        used to bias script topics toward the user's selected tags.
     """
     logger.info("Starting content ideation...")
 
     # generate_scripts raises RuntimeError if all LLMs fail;
     # let it propagate so main.py _run_phase retries the whole phase.
-    scripts = generate_scripts(category=category, count=count)
+    scripts = generate_scripts(
+        category=category,
+        count=count,
+        discovery_queries=discovery_queries,
+    )
 
     conn = get_connection()
     for script in scripts:

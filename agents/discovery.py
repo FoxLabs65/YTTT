@@ -73,7 +73,8 @@ def _extract_tags_from_text(text: str) -> list[str]:
     return re.findall(r"#(\w+)", text)
 
 
-# Tag/keyword -> category mapping for trend classification
+# Tag/keyword -> category mapping for trend classification.
+# Only script-style categories; no static gaming/roblox. Add your own via discovery queries.
 _CATEGORY_KEYWORDS = {
     "motivational": ("motivation", "motivational", "inspire", "inspiring", "quote", "mindset", "success", "goals"),
     "funny": ("funny", "humor", "comedy", "laugh", "joke", "hilarious"),
@@ -83,8 +84,6 @@ _CATEGORY_KEYWORDS = {
     "howto": ("howto", "how to", "tutorial", "tips", "did you know", "life hack", "guide", "learn"),
     "pov": ("pov", "point of view", "relatable", "the moment you", "when you"),
     "reaction": ("reaction", "commentary", "breakdown", "discussion", "hot take", "analysis"),
-    "roblox": ("roblox", "blox", "brookhaven", "adopt me", "bloxburg"),
-    "gaming": ("gaming", "game", "games", "gamer", "playthrough", "stream", "twitch", "esports", "fortnite", "minecraft"),
 }
 
 
@@ -98,8 +97,12 @@ def _infer_category(tags: list[str], title: str) -> str:
 
 
 def scrape_youtube_shorts(queries: list[str] | None = None, max_per_query: int = 20) -> list[dict]:
-    queries = queries or cfg("discovery.youtube_queries") or ["trending shorts"]
+    """Scrape YouTube Shorts using ONLY user-configured discovery.youtube_queries."""
+    queries = queries if queries is not None else (cfg("discovery.youtube_queries") or [])
     max_per_query = max_per_query or cfg("discovery.max_results_per_query") or 20
+    if not queries:
+        logger.warning("No discovery.youtube_queries configured — add tags in Content Studio > Search Criteria")
+        return []
     conn = get_connection()
     all_trends = []
 
@@ -157,8 +160,12 @@ def scrape_youtube_shorts(queries: list[str] | None = None, max_per_query: int =
 
 
 def scrape_tiktok_trending(hashtags: list[str] | None = None, max_per_tag: int = 20) -> list[dict]:
-    hashtags = hashtags or cfg("discovery.tiktok_hashtags") or ["#viral"]
+    """Scrape TikTok using ONLY user-configured discovery.tiktok_hashtags."""
+    hashtags = hashtags if hashtags is not None else (cfg("discovery.tiktok_hashtags") or [])
     max_per_tag = max_per_tag or cfg("discovery.max_results_per_query") or 20
+    if not hashtags:
+        logger.warning("No discovery.tiktok_hashtags configured — add tags in Content Studio > Search Criteria")
+        return []
     conn = get_connection()
     all_trends = []
 
@@ -225,8 +232,13 @@ def scrape_tiktok_trending(hashtags: list[str] | None = None, max_per_tag: int =
     return all_trends
 
 
-def run_discovery(platforms: str | list[str] | None = None) -> dict:
-    """Run discovery pipeline. platforms: 'youtube', 'tiktok', 'both', or list. Default 'both'."""
+def run_discovery(
+    platforms: str | list[str] | None = None,
+    youtube_queries: list[str] | None = None,
+    tiktok_hashtags: list[str] | None = None,
+) -> dict:
+    """Run discovery pipeline. platforms: 'youtube', 'tiktok', 'both', or list. Default 'both'.
+    Optional youtube_queries/tiktok_hashtags override config for this run (e.g. from UI selection)."""
     if platforms is None:
         platforms = "both"
     if isinstance(platforms, str):
@@ -235,8 +247,8 @@ def run_discovery(platforms: str | list[str] | None = None) -> dict:
         platforms = ["youtube", "tiktok"]
 
     logger.info("Starting trend discovery (platforms: %s)...", platforms)
-    yt_trends = scrape_youtube_shorts() if "youtube" in platforms else []
-    tt_trends = scrape_tiktok_trending() if "tiktok" in platforms else []
+    yt_trends = scrape_youtube_shorts(queries=youtube_queries) if "youtube" in platforms else []
+    tt_trends = scrape_tiktok_trending(hashtags=tiktok_hashtags) if "tiktok" in platforms else []
 
     conn = get_connection()
     top = get_top_trends(conn, limit=20)

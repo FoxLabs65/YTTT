@@ -234,7 +234,7 @@ def render():
                 if view_status in ("pending", "rejected", "composed"):
                     st.markdown("**Regenerate with changes**")
                     script_row = conn.execute(
-                        "SELECT voice_override, music_override_path FROM scripts WHERE id = ?",
+                        "SELECT voice_override, music_override_path, force_ai_audio_override FROM scripts WHERE id = ?",
                         (video.get("script_id"),),
                     ).fetchone()
                     current_voice = script_row["voice_override"] if script_row else None
@@ -265,6 +265,15 @@ def render():
                         key=f"{key}_music", help="Change music for regeneration",
                     )
                     new_music_path = track_paths[track_options.index(new_music_sel)] if new_music_sel != "(use default)" else None
+                    use_default_music = new_music_sel == "(use default)"
+                    force_ai_checked = st.checkbox(
+                        "Use AI-generated music (Suno)",
+                        value=bool(script_row.get("force_ai_audio_override") if script_row else False),
+                        key=f"{key}_force_ai",
+                        disabled=not use_default_music,
+                        help="Force Suno AI music when using default. Ignored when a specific track is selected.",
+                    )
+                    force_ai_audio = use_default_music and force_ai_checked
 
                     if st.button("Regenerate Video", key=f"{key}_regen"):
                         script_id = video.get("script_id")
@@ -277,7 +286,9 @@ def render():
                         extra = ["--script-id", str(script_id)]
                         if voice_val:
                             extra.extend(["--voice", voice_val])
-                        if new_music_path:
+                        if force_ai_audio and use_default_music:
+                            extra.append("--force-ai-audio")
+                        elif new_music_path:
                             extra.extend(["--music-path", new_music_path])
                         runner = get_runner()
                         runner.start("regenerate", extra)

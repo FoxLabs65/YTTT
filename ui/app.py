@@ -76,12 +76,9 @@ with st.sidebar:
                 st.caption(f"• {w}")
             st.caption("Go to **Setup** to fix.")
 
-    # Compact running indicator only (no log — live log kept in Content Studio)
-    @st.fragment(run_every=5)
-    def _sidebar_status():
-        from ui.components import running_indicator
-        running_indicator()
-    _sidebar_status()
+    # Running indicator (updates on any rerun; no run_every to avoid fragment orphan errors)
+    from ui.components import running_indicator
+    running_indicator()
 
     st.divider()
 

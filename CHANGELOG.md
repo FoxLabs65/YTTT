@@ -2,6 +2,34 @@
 
 All notable changes to the Shorts Engine are documented here.
 
+## [1.8.0] - 2026-03-01
+
+### Added
+- **Audio stock vs AI scoring:** Stock music is now scored before deciding whether to call Suno
+  - `stock_score_threshold` (default 0.5): if best stock score >= threshold, use stock and skip Suno (saves credits)
+  - `force_ai_audio` option: when enabled, always try Suno first; when disabled, scoring applies
+  - Suno failure always falls back to stock pipeline in all paths
+- **Regeneration overrides:** `music_override_path` skips music sourcing when user selects a specific track; `--force-ai-audio` forces Suno for that regeneration
+- **Suno AI Music config:** Force AI checkbox, stock score threshold (0.0–1.0) in Setup; "Use AI-generated music" checkbox in Review regenerate block
+- **Per-video upload selection:** Uploads page checkboxes to select which approved videos to upload (no mass upload)
+- **Upload delay:** Configurable `upload.delay_minutes_between` (default 15) between uploads to avoid algorithm penalty; scheduler respects same behavior
+- **CLI:** `--upload-ids` for selective upload; `--force-ai-audio` for regenerate
+- **User audio folder:** `assets/music/user/` for user-provided tracks (scored like stock, included in candidates)
+- **Documentation:** `docs/ROOT_CAUSE_FRAGMENT_ERRORS.md`, `docs/JAPANESE_SODA_DUPLICATE_ANALYSIS.md` for troubleshooting
+
+### Changed
+- Music sourcing: stock-first flow when `force_ai_audio` is false; Suno only when stock below threshold or forced
+- Upload: requires explicit `upload_ids` selection; no automatic mass upload; configurable delay between uploads
+- Database: `scripts.force_ai_audio_override` column for per-script AI audio preference on regeneration
+- Sourcing: when `music_override_path` set, skip music sourcing and use override
+- Discovery/ideation: user-provided YouTube/TikTok queries drive scraping (no hardcoded gaming/roblox)
+
+### Fixed
+- Music override wasted Suno credits during regeneration when user had chosen a specific track
+- Mass upload triggering platform algorithm penalties; now requires explicit selection and spaced uploads
+
+---
+
 ## [1.7.0] - 2026-02-24
 
 ### Added

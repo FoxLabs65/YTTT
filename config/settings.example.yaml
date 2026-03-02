@@ -116,6 +116,20 @@ sourcing:
     auto_download: true             # Auto-download from YouTube/Freesound when no local track matches
     min_tracks_per_mood: 5          # Minimum tracks to keep per mood category (higher = more variety)
     prefer_local: true              # Prefer manually placed .mp3 files over auto-downloaded
+    # Suno AI music generation (optional)
+    suno_api_key: ""                # Get key at https://sunoapi.org
+    suno_enabled: false
+    suno_model: "V4_5ALL"           # V4 | V4_5 | V4_5PLUS | V4_5ALL | V5
+    suno_instrumental: true         # Background music only, no vocals
+    suno_custom_mode: false         # Advanced: requires style + title
+    suno_prompt_override: ""        # Custom prompt; empty = auto from script metadata
+    suno_style_override: ""         # Genre/style (e.g. "Cinematic orchestral"); required in custom mode
+    suno_title_override: ""         # Track title for custom mode; auto "ShortsBg_{mood}" if empty
+    suno_exclusion_override: ""     # negativeTags: styles to exclude (e.g. "Heavy Metal, Upbeat Drums")
+    suno_weirdness: 50              # 0-100: weirdnessConstraint, 0=conservative, 100=creative
+    suno_style_weight: 65           # 0-100: styleWeight, how strongly to follow style
+    force_ai_audio: false           # When true, always try Suno first (bypass stock scoring)
+    stock_score_threshold: 0.5      # If best stock score >= this, use stock and skip Suno (0.0-1.0)
 
 # --- Video Composition ---
 composer:
@@ -131,7 +145,10 @@ composer:
   watermark_text: ""  # Set your channel name, or leave empty
 
 # --- Upload ---
+# delay_minutes_between: Minutes to wait between each upload. Prevents mass-upload
+# penalty from YouTube/TikTok algorithms. Recommended 15-30. Scheduler never auto-uploads.
 upload:
+  delay_minutes_between: 15
   youtube:
     category_id: "22"  # People & Blogs
     privacy_status: "public"
