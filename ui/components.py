@@ -86,7 +86,8 @@ def confirm_action(label: str, key: str) -> bool:
 
 
 def running_indicator():
-    """Show a pulsing indicator when a background task is running."""
+    """Show a pulsing indicator when a background task is running.
+    Static version - updates only on rerun."""
     from ui.runner import get_runner
     runner = get_runner()
     if runner.is_running:
@@ -101,19 +102,48 @@ def running_indicator():
     return False
 
 
-def live_log_viewer(task_name: str | None = None, lines: int = 50):
-    """Show log when a background task is running. Static snapshot — use Refresh to update.
-    Note: run_every fragment removed to avoid 'fragment does not exist' errors on rerun."""
+def live_running_indicator():
+    """Show a pulsing indicator with live-updating elapsed time.
+    Uses a fragment with run_every when a task is running."""
     from ui.runner import get_runner
     r = get_runner()
-    if r.is_running and (task_name is None or r.task_name == task_name):
-        st.caption(f"Running... {r.elapsed}")
-        log_viewer(r.get_log_tail(lines))
-    elif r.status in ("completed", "failed") and r.log_path and r.log_path.exists():
-        st.caption(f"Finished: {r.status} ({r.elapsed})")
-        log_viewer(r.get_log_tail(lines))
-    else:
-        st.info("No active task. Start a task to see logs.")
+    run_every = 5 if r.is_running else None
+
+    @st.fragment(run_every=run_every)
+    def _indicator_fragment():
+        r2 = get_runner()
+        if r2.is_running:
+            st.markdown(
+                f'<div class="pipeline-status">'
+                f'<span class="phase-dot running"></span> '
+                f'<span style="color:#fbbf24;font-weight:600">'
+                f'{r2.task_name} running ({r2.elapsed})</span></div>',
+                unsafe_allow_html=True,
+            )
+
+    _indicator_fragment()
+
+
+def live_log_viewer(task_name: str | None = None, lines: int = 50, auto_refresh: bool = True):
+    """Show log with optional auto-refresh when a task is running.
+    Uses dynamic run_every (only when running) to avoid fragment orphan errors."""
+    from ui.runner import get_runner
+    r = get_runner()
+    run_every = 5 if (auto_refresh and r.is_running) else None
+
+    @st.fragment(run_every=run_every)
+    def _log_fragment():
+        r2 = get_runner()
+        if r2.is_running and (task_name is None or r2.task_name == task_name):
+            st.caption(f"Running... {r2.elapsed} — live updates")
+            log_viewer(r2.get_log_tail(lines))
+        elif r2.status in ("completed", "failed") and r2.log_path and r2.log_path.exists():
+            st.caption(f"Finished: {r2.status} ({r2.elapsed})")
+            log_viewer(r2.get_log_tail(lines))
+        else:
+            st.info("No active task. Start a task to see logs.")
+
+    _log_fragment()
 
 
 def static_log_viewer(task_name: str | None = None, lines: int = 50):

@@ -76,9 +76,9 @@ with st.sidebar:
                 st.caption(f"• {w}")
             st.caption("Go to **Setup** to fix.")
 
-    # Running indicator (updates on any rerun; no run_every to avoid fragment orphan errors)
-    from ui.components import running_indicator
-    running_indicator()
+    # Running indicator (live-updating elapsed time when task is running)
+    from ui.components import live_running_indicator
+    live_running_indicator()
 
     st.divider()
 

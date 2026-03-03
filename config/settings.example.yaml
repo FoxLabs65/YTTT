@@ -16,6 +16,8 @@ unsplash_access_key: ""  # Optional: free at https://unsplash.com/developers (at
 anthropic_api_key: "YOUR_ANTHROPIC_API_KEY"
 gemini_api_key: ""  # Fallback LLM: free at https://aistudio.google.com/apikey
 freesound_api_key: ""  # Optional: free at https://freesound.org/apiv2/apply/ for extra music variety
+replicate_api_token: ""  # For AI image (Flux): https://replicate.com/account/api-tokens
+segmind_api_key: ""     # For AI video: https://cloud.segmind.com/keys
 
 # --- YouTube OAuth ---
 # Place your client_secret.json in this config/ directory.
@@ -83,6 +85,13 @@ sourcing:
   provider_rotation: "weighted"
   video_providers: [pexels, pixabay, coverr]  # Enable coverr if API key set
   image_providers: [pexels, pixabay, unsplash, openverse]  # openverse needs no key
+  # AI media (optional fallbacks when stock scores low)
+  ai_image_providers: []           # e.g. [flux] for Replicate Flux
+  ai_image_fallback_only: true     # Only use AI when stock fails
+  ai_image_aspect_ratio: "9:16"     # Vertical for Shorts
+  ai_video_providers: []           # e.g. [segmind]
+  ai_video_fallback_only: true
+  ai_video_max_duration: 8         # Seconds
   provider_weights:  # For weighted strategy
     pexels: 40
     pixabay: 30

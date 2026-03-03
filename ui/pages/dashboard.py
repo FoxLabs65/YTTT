@@ -13,7 +13,7 @@ if str(_ROOT) not in sys.path:
 import streamlit as st
 
 from models.database import get_connection, get_stats
-from ui.components import metric_card, section_header, status_badge, static_log_viewer
+from ui.components import metric_card, section_header, status_badge, live_log_viewer, static_log_viewer
 from ui.runner import get_runner
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -62,7 +62,7 @@ def render():
                 unsafe_allow_html=True,
             )
             with st.expander("Live Log", expanded=True):
-                static_log_viewer(task_name=None, lines=40)
+                live_log_viewer(task_name=None, lines=40)
             if st.button("Stop", type="secondary"):
                 runner.stop()
                 st.toast("Task stopped")

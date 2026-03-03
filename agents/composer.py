@@ -426,7 +426,14 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
             logger.info("Script #%d: loaded %d word boundaries for caption sync", script_id, len(word_boundaries))
 
     segments = _parse_script_segments(script, voiceover_duration=vo_duration, word_boundaries=word_boundaries)
+    if not segments:
+        logger.warning("Script #%d: no segments parsed (empty hook/body/cta), skipping", script_id)
+        return None
+
     total_duration = sum(s["duration"] for s in segments)
+    if total_duration <= 0:
+        logger.warning("Script #%d: total duration <= 0, skipping", script_id)
+        return None
 
     # Calculate how long the hook visual lasts (voiceover starts after this)
     hook_offset = 0.0
@@ -441,6 +448,8 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
 
     for seg in segments:
         dur = seg["duration"]
+        if dur <= 0:
+            dur = 1.5  # avoid zero-duration clips that cause MoviePy buffer errors
 
         # Pick a visual source
         if video_assets and asset_idx < len(video_assets):
@@ -477,9 +486,20 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
         logger.warning("Script #%d: could not create any clips", script_id)
         return None
 
+    # Filter out zero-duration clips (can cause index-out-of-bounds in MoviePy)
+    valid_clips = [c for c in clips if hasattr(c, "duration") and c.duration and c.duration > 0]
+    if not valid_clips:
+        logger.warning("Script #%d: all clips have zero/empty duration", script_id)
+        for c in clips:
+            try:
+                c.close()
+            except Exception:
+                pass
+        return None
+
     # Concatenate base video
     try:
-        base_video = concatenate_videoclips(clips, method="compose")
+        base_video = concatenate_videoclips(valid_clips, method="compose")
     except Exception as e:
         logger.error("Failed to concatenate clips for script #%d: %s", script_id, e)
         return None

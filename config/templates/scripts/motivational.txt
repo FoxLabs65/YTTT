@@ -20,7 +20,7 @@ IMPORTANT structure rules:
 
 Return ONLY a JSON array. Each element must have these exact keys:
 - "title": clickworthy video title
-- "category": "motivational"
+- "category": "{category}"
 - "hook": short on-screen text overlay for the first 2 seconds (visual only, max 10 words)
 - "script_body": the COMPLETE voiceover narration with [visual cues] inline -- starts with the hook idea woven in naturally, covers the full story, and ends with a closing thought
 - "cta": short on-screen call-to-action text overlay (visual only, e.g. "Follow for more")

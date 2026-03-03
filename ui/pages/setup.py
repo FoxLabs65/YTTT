@@ -399,6 +399,60 @@ These would require custom integration. Edge-TTS is free and works out of the bo
         if st.button("Test Suno", key="test_suno"):
             _test_suno(suno_key)
 
+    # ── AI Image & Video ────────────────────────────────────────
+    with st.expander("AI Image & Video"):
+        st.caption("Optional fallbacks when stock search returns low scores or no results. Requires API keys.")
+        sourcing_top = cfg.get("sourcing") or {}
+        if not isinstance(sourcing_top, dict):
+            sourcing_top = {}
+
+        repl_token = st.text_input(
+            "Replicate API Token",
+            value=cfg.get("replicate_api_token", ""),
+            type="password",
+            key="cfg_replicate",
+            help="For Flux AI images: https://replicate.com/account/api-tokens",
+        )
+        _set(cfg, "replicate_api_token", repl_token)
+
+        ai_img_prov = sourcing_top.get("ai_image_providers") or []
+        if not isinstance(ai_img_prov, list):
+            ai_img_prov = []
+        flux_enabled = "flux" in ai_img_prov
+        val = st.checkbox("Enable Flux (AI images)", value=flux_enabled, key="cfg_flux_enabled",
+            help="Use Replicate Flux when stock images score low.")
+        _set(cfg, "sourcing.ai_image_providers", ["flux"] if val else [])
+
+        val = st.checkbox("AI image fallback only", value=sourcing_top.get("ai_image_fallback_only", True),
+            key="cfg_ai_img_fallback", help="Only use AI when stock fails.")
+        _set(cfg, "sourcing.ai_image_fallback_only", val)
+
+        if st.button("Test Flux", key="test_flux"):
+            _test_flux(repl_token)
+
+        st.divider()
+        seg_key = st.text_input(
+            "Segmind API Key",
+            value=cfg.get("segmind_api_key", ""),
+            type="password",
+            key="cfg_segmind",
+            help="For AI video: https://cloud.segmind.com/keys",
+        )
+        _set(cfg, "segmind_api_key", seg_key)
+
+        ai_vid_prov = sourcing_top.get("ai_video_providers") or []
+        segmind_enabled = "segmind" in ai_vid_prov
+        val = st.checkbox("Enable Segmind (AI video)", value=segmind_enabled, key="cfg_segmind_enabled",
+            help="Use Segmind Veo when stock videos score low.")
+        _set(cfg, "sourcing.ai_video_providers", ["segmind"] if val else [])
+
+        val = st.checkbox("AI video fallback only", value=sourcing_top.get("ai_video_fallback_only", True),
+            key="cfg_ai_vid_fallback")
+        _set(cfg, "sourcing.ai_video_fallback_only", val)
+
+        if st.button("Test Segmind", key="test_segmind"):
+            _test_segmind(seg_key)
+
     # ── Video Composition ───────────────────────────────────────
     with st.expander("Video Composition"):
         composer = cfg.get("composer", {})
@@ -687,6 +741,47 @@ def _test_unsplash(key: str):
             st.error(f"Unsplash: HTTP {r.status_code}")
     except Exception as e:
         st.error(f"Unsplash: {e}")
+
+
+def _test_flux(token: str):
+    if not token or token.startswith("YOUR_"):
+        st.error("No Replicate token configured")
+        return
+    try:
+        import replicate
+        import os
+        os.environ["REPLICATE_API_TOKEN"] = token
+        output = replicate.run("black-forest-labs/flux-schnell", input={"prompt": "test", "aspect_ratio": "1:1"})
+        if output:
+            st.success("Flux: connected")
+        else:
+            st.warning("Flux: no output (check token)")
+    except ImportError:
+        st.error("Install replicate: pip install replicate")
+    except Exception as e:
+        st.error(f"Flux: {e}")
+
+
+def _test_segmind(key: str):
+    if not key or key.startswith("YOUR_"):
+        st.error("No Segmind key configured")
+        return
+    try:
+        import requests
+        r = requests.post(
+            "https://api.segmind.com/v1/fast-flux-schnell",
+            headers={"x-api-key": key, "Content-Type": "application/json"},
+            json={"prompt": "test", "steps": 1, "aspect_ratio": "1:1"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            st.success("Segmind: connected")
+        elif r.status_code == 401:
+            st.error("Segmind: invalid API key")
+        else:
+            st.error(f"Segmind: HTTP {r.status_code}")
+    except Exception as e:
+        st.error(f"Segmind: {e}")
 
 
 def _test_suno(key: str):

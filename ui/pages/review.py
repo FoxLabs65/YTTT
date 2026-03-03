@@ -268,7 +268,7 @@ def render():
                     use_default_music = new_music_sel == "(use default)"
                     force_ai_checked = st.checkbox(
                         "Use AI-generated music (Suno)",
-                        value=bool(script_row.get("force_ai_audio_override") if script_row else False),
+                        value=bool(script_row["force_ai_audio_override"]) if script_row else False,
                         key=f"{key}_force_ai",
                         disabled=not use_default_music,
                         help="Force Suno AI music when using default. Ignored when a specific track is selected.",

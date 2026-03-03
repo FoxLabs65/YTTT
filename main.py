@@ -79,6 +79,19 @@ def cmd_setup():
         else:
             logger.info("  Suno AI Music: NOT CONFIGURED — add suno_api_key in Setup > Suno AI Music")
 
+    sourcing_top = config.get("sourcing") or {}
+    ai_img_prov = sourcing_top.get("ai_image_providers") or []
+    if ai_img_prov and _key_valid(config.get("replicate_api_token", "")):
+        logger.info("  AI Image (Flux): OK")
+    elif ai_img_prov:
+        logger.info("  AI Image (Flux): NOT CONFIGURED — add replicate_api_token in Setup > AI Image & Video")
+
+    ai_vid_prov = sourcing_top.get("ai_video_providers") or []
+    if ai_vid_prov and _key_valid(config.get("segmind_api_key", "")):
+        logger.info("  AI Video (Segmind): OK")
+    elif ai_vid_prov:
+        logger.info("  AI Video (Segmind): NOT CONFIGURED — add segmind_api_key in Setup > AI Image & Video")
+
     if tiktok_keys_present and tiktok_enabled:
         try:
             from agents.tiktok_auth import has_tiktok_token
@@ -225,7 +238,17 @@ def cmd_run(
     # Phase 2: Ideation (critical -- scripts drive the rest of the pipeline)
     logger.info("--- Phase 2: Content Ideation ---")
     from agents.ideation import run_ideation
-    disc_queries = (yt_q or []) + (tt_h or [])
+    # Use only queries for platforms actually scraped (YouTube-only → no TikTok hashtags, etc.)
+    eff_platforms = disc_platforms or "both"
+    if eff_platforms == "both":
+        eff_platforms = ["youtube", "tiktok"]
+    elif isinstance(eff_platforms, str):
+        eff_platforms = [eff_platforms.strip().lower()]
+    disc_queries = []
+    if "youtube" in eff_platforms and yt_q:
+        disc_queries.extend(yt_q)
+    if "tiktok" in eff_platforms and tt_h:
+        disc_queries.extend(tt_h)
     results["ideation"] = _run_phase(
         "Ideation",
         lambda: run_ideation(

@@ -239,6 +239,30 @@ def _load_music_meta(path: Path) -> dict:
         return {}
 
 
+def _write_suno_meta(
+    path: Path,
+    *,
+    keywords: list[str],
+    mood: str,
+    category: str,
+    prompt: str = "",
+) -> None:
+    """Write .meta.json alongside a Suno track for reuse scoring in future runs."""
+    meta_path = path.with_name(path.stem + ".meta.json")
+    try:
+        meta_path.write_text(
+            json.dumps({
+                "keywords": keywords,
+                "mood": mood,
+                "category": category,
+                "prompt": prompt[:500] if prompt else "",
+            }, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.debug("Could not write Suno meta for %s: %s", path.name, e)
+
+
 def _local_path_to_candidate(path: Path, source: str = "local") -> dict:
     """Convert a local file path to the same candidate format as online for unified scoring."""
     stem = path.stem.lower()
@@ -693,6 +717,9 @@ def _collect_all_music_candidates(
     conn.close()
     candidates.sort(key=lambda x: x["_score"], reverse=True)
 
+    # Exclude sound-effect assets (short clips that cause buffer errors when used as background music)
+    candidates = [c for c in candidates if not _is_sound_effect(c)]
+
     # Shuffle within similar score bands for variety
     if candidates and candidates[0]["_score"] == candidates[-1]["_score"]:
         random.shuffle(candidates)
@@ -704,6 +731,18 @@ def _collect_all_music_candidates(
         candidates = top + rest
 
     return candidates
+
+
+def _is_sound_effect(candidate: dict) -> bool:
+    """Detect sound-effect assets that cause buffer errors when used as background music."""
+    title = (candidate.get("title") or "").lower()
+    path = candidate.get("path")
+    if path:
+        title = f"{title} {Path(path).name.lower()}"
+    # YouTube/Freesound often use "Sound Effect" or "soundeffec" in titles for SFX
+    if "sound effect" in title or "soundeffec" in title or " sfx " in title:
+        return True
+    return False
 
 
 # --- Local Library Management ---
@@ -910,6 +949,14 @@ def _try_suno_generate(
         dest_path=dest_path,
     )
     if track_path and track_path.exists():
+        # Write metadata for reuse (keywords/mood/category help scoring in future runs)
+        _write_suno_meta(
+            track_path,
+            keywords=list(script_keywords) if script_keywords else [],
+            mood=music_config["mood"],
+            category=category,
+            prompt=prompt,
+        )
         conn = get_connection()
         insert_asset(
             conn,

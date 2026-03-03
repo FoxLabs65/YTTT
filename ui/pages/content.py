@@ -21,7 +21,7 @@ from models.database import (
     get_connection, get_scripts_by_status, get_top_trends, get_top_tags,
     get_trend_categories, purge_discovery_data, delete_script,
 )
-from ui.components import section_header, status_badge, static_log_viewer
+from ui.components import section_header, status_badge, live_log_viewer
 from ui.runner import get_runner
 
 
@@ -241,12 +241,8 @@ def render():
                     st.rerun()
 
     with st.expander("Live Log", expanded=runner.is_running):
-        if runner.is_running:
-            st.caption(f"Running... {runner.elapsed} — click **Refresh** for latest")
-        elif runner.status in ("completed", "failed") and runner.log_path and runner.log_path.exists():
-            st.caption(f"Finished: {runner.status} ({runner.elapsed})")
-        static_log_viewer(task_name=None, lines=40)
-        if st.button("Refresh", key="cs_log_refresh", help="Update log and page status"):
+        live_log_viewer(task_name=None, lines=40)
+        if st.button("Refresh", key="cs_log_refresh", help="Update page status and metrics"):
             st.rerun()
 
     st.divider()

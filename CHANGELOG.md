@@ -2,6 +2,40 @@
 
 All notable changes to the Shorts Engine are documented here.
 
+## [1.9.0] - 2026-02-24
+
+### Added
+- **AI Image (Replicate Flux):** Optional fallback when stock image search returns low scores
+  - `agents/ai_image_providers.py` with Flux Schnell; metadata for reuse
+  - Config: `replicate_api_token`, `sourcing.ai_image_providers`, `ai_image_fallback_only`
+  - Setup: "AI Image & Video" expander with Replicate token, Test Flux
+- **AI Video (Segmind):** Optional fallback when stock video search fails
+  - `agents/ai_video_providers.py` with Segmind Veo; metadata for reuse
+  - Config: `segmind_api_key`, `sourcing.ai_video_providers`, `ai_video_fallback_only`
+  - Setup: Segmind key, Test Segmind
+- **Stock metadata for reuse:** `.meta.json` written for all stock video/image downloads (Pexels, Pixabay, Coverr, Unsplash, Openverse)
+  - `_scan_stock_videos()`, `_scan_stock_images()` add previously downloaded assets to candidate pool for scoring and reuse
+- **Suno metadata:** `.meta.json` written alongside Suno tracks with keywords, mood, category for reuse scoring
+- **Live timer:** Sidebar running indicator now auto-updates every 5 seconds when a task is running
+- **Keyword shortening:** `_shorten_keywords_for_search()` for stock API queries (2–4 words, better match)
+- **Dependency:** `replicate>=0.25.0` for Flux
+- **Documentation:** `docs/AI_MEDIA_GENERATION_IMPLEMENTATION_PLAN.md`, `docs/PIPELINE_ANALYSIS_FINDINGS.md`
+
+### Changed
+- **Platform-dependent discovery:** `discovery_queries` now includes only YouTube queries when scraping YouTube only; TikTok hashtags excluded when platform is YouTube
+- **Motivational template:** Uses `{category}` placeholder for validation
+- **Composer:** Guards against empty segments, zero-duration clips; minimum 1.5s for zero-duration segments
+- **Music pool:** Excludes sound-effect assets (filename contains "sound effect", "sfx") to avoid MoviePy buffer errors
+- **Setup:** New "AI Image & Video" expander consolidating Flux and Segmind configuration
+
+### Fixed
+- Timer in sidebar not auto-updating; now uses fragment with `run_every=5` when task running
+- Roblox scripts appearing when only YouTube scraped; discovery queries now filtered by selected platform
+- Sound-effect tracks causing MoviePy buffer index errors when used as background music
+- Render failure for scripts with empty segments or zero-duration clips
+
+---
+
 ## [1.8.0] - 2026-03-01
 
 ### Added

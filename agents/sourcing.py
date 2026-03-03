@@ -677,6 +677,43 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
 # Topic modifiers for video/image search. Empty — no static topics; user discovery queries drive trends.
 TOPIC_VISUAL_MODIFIERS: dict[str, list[str]] = {}
 
+# Words to drop when shortening search queries for stock APIs (short phrases match better)
+SEARCH_FILLER_WORDS = {
+    "the", "a", "an", "of", "for", "in", "on", "at", "to", "and", "or",
+    "technical", "close-up", "close", "analysis", "highlight", "footage",
+    "shot", "view", "scene", "showing", "shows", "show", "effect", "visual",
+}
+
+# Max words per search query (stock APIs like Pexels/Pixabay match shorter phrases better)
+MAX_SEARCH_QUERY_WORDS = 4
+
+
+def _shorten_keywords_for_search(keywords: list[str], max_words: int = MAX_SEARCH_QUERY_WORDS) -> list[str]:
+    """Shorten keyword phrases for stock API search. Prefer 2-4 word core phrases."""
+    result = []
+    seen = set()
+    for kw in keywords:
+        if not kw or len(kw) < 3:
+            continue
+        words = kw.lower().split()
+        # Drop filler words and take up to max_words
+        kept = [w for w in words if w not in SEARCH_FILLER_WORDS and len(w) > 1]
+        if not kept:
+            kept = words[-max_words:] if len(words) > max_words else words
+        short = " ".join(kept[:max_words]) if kept else kw
+        short = re.sub(r"\s+", " ", short).strip()
+        if short and short not in seen and len(short) > 2:
+            seen.add(short)
+            result.append(short)
+        # Also add a 2-word variant for long phrases (e.g. "ball trajectory" from "technical diagram of ball trajectory")
+        if len(kept) > 3:
+            core = " ".join(kept[-2:])  # last two words often = main noun phrase
+            if core and core not in seen and len(core) > 3:
+                seen.add(core)
+                result.append(core)
+    return result[:20]
+
+
 CATEGORY_VISUAL_FALLBACKS = {
     "motivational": ["sunrise inspiration", "person walking forward", "mountain peak", "ocean waves calm"],
     "funny": ["laughing people", "funny reaction", "comedy stage", "colorful confetti"],
@@ -704,17 +741,19 @@ def _expand_visual_queries(visual_cues: list[str], title: str, category: str,
     if trend_topic and trend_topic in TOPIC_VISUAL_MODIFIERS:
         queries.extend(TOPIC_VISUAL_MODIFIERS[trend_topic])
 
-    # Script-derived keywords (bracket cues, extracted nouns, etc.)
+    # Script-derived keywords: use shortened forms for stock APIs (2-4 words match better)
     if script_keywords:
-        queries.extend(script_keywords)
+        queries.extend(_shorten_keywords_for_search(script_keywords))
 
-    # Simplify visual cues: extract core nouns/phrases, drop overly specific adjectives
+    # Simplify visual cues: extract core nouns/phrases, shorten for search
     for cue in visual_cues:
         clean = re.sub(r"\b(show|effect|animation|graphic|footage|visual|close-up|slow|fast|aesthetic)\b", "", cue, flags=re.IGNORECASE)
         clean = re.sub(r"\s+", " ", clean).strip()
         if len(clean) > 3:
-            queries.append(clean)
-        queries.append(cue)
+            for short in _shorten_keywords_for_search([clean]):
+                queries.append(short)
+        if len(cue.split()) <= MAX_SEARCH_QUERY_WORDS:
+            queries.append(cue)
 
     # Extract 2-3 word noun phrases from the title
     title_clean = re.sub(r"[^\w\s]", "", title)
@@ -748,6 +787,137 @@ def _load_meta_json(path: Path) -> dict:
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _write_stock_meta(
+    path: Path,
+    *,
+    search_query: str,
+    source: str,
+    asset_type: str,
+    keywords: list[str] | None = None,
+) -> None:
+    """Write .meta.json alongside stock download for reuse scoring in future runs."""
+    keywords = keywords or ([search_query] if search_query else [])
+    meta_path = path.with_name(path.stem + ".meta.json")
+    try:
+        meta_path.write_text(
+            json.dumps({
+                "keywords": keywords,
+                "search_query": search_query,
+                "source": source,
+                "asset_type": asset_type,
+            }, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logger.debug("Could not write stock meta for %s: %s", path.name, e)
+
+
+def _scan_stock_videos() -> list[dict]:
+    """Scan assets/stock_footage/ for downloaded videos with metadata (for reuse)."""
+    candidates = []
+    if not STOCK_DIR.exists():
+        return candidates
+    for p in STOCK_DIR.iterdir():
+        if not p.is_file() or p.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        meta = _load_meta_json(p)
+        if not meta:
+            continue
+        keywords = meta.get("keywords", [])
+        search_query = meta.get("search_query", "")
+        searchable = p.stem.lower()
+        if keywords:
+            searchable += " " + " ".join(str(k).lower() for k in keywords)
+        if search_query:
+            searchable += " " + search_query.lower()
+        candidates.append({
+            "path": p,
+            "searchable_text": searchable.strip(),
+            "source": meta.get("source", "stock"),
+            "asset_type": "video",
+        })
+    return candidates
+
+
+def _scan_stock_images() -> list[dict]:
+    """Scan assets/images/ for downloaded images with metadata (for reuse)."""
+    candidates = []
+    if not IMAGES_DIR.exists():
+        return candidates
+    for p in IMAGES_DIR.iterdir():
+        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        meta = _load_meta_json(p)
+        if not meta:
+            continue
+        keywords = meta.get("keywords", [])
+        search_query = meta.get("search_query", "")
+        searchable = p.stem.lower()
+        if keywords:
+            searchable += " " + " ".join(str(k).lower() for k in keywords)
+        if search_query:
+            searchable += " " + search_query.lower()
+        candidates.append({
+            "path": p,
+            "searchable_text": searchable.strip(),
+            "source": meta.get("source", "stock"),
+            "asset_type": "image",
+        })
+    return candidates
+
+
+def _scan_ai_videos() -> list[dict]:
+    """Scan assets/stock_footage/ai/ for AI-generated videos (for reuse)."""
+    ai_dir = STOCK_DIR / "ai"
+    candidates = []
+    if not ai_dir.exists():
+        return candidates
+    for p in ai_dir.iterdir():
+        if not p.is_file() or p.suffix.lower() not in VIDEO_EXTENSIONS:
+            continue
+        meta = _load_meta_json(p)
+        keywords = meta.get("keywords", [])
+        category = meta.get("category", "")
+        searchable = p.stem.lower()
+        if keywords:
+            searchable += " " + " ".join(str(k).lower() for k in keywords)
+        if category:
+            searchable += " " + category.lower()
+        candidates.append({
+            "path": p,
+            "searchable_text": searchable.strip(),
+            "source": meta.get("provider", "ai_video"),
+            "asset_type": "video",
+        })
+    return candidates
+
+
+def _scan_ai_images() -> list[dict]:
+    """Scan assets/images/ai/ for AI-generated images (for reuse)."""
+    ai_dir = IMAGES_DIR / "ai"
+    candidates = []
+    if not ai_dir.exists():
+        return candidates
+    for p in ai_dir.iterdir():
+        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        meta = _load_meta_json(p)
+        keywords = meta.get("keywords", [])
+        category = meta.get("category", "")
+        searchable = p.stem.lower()
+        if keywords:
+            searchable += " " + " ".join(str(k).lower() for k in keywords)
+        if category:
+            searchable += " " + category.lower()
+        candidates.append({
+            "path": p,
+            "searchable_text": searchable.strip(),
+            "source": "ai_image",
+            "asset_type": "image",
+        })
+    return candidates
 
 
 def _scan_user_videos() -> list[dict]:
@@ -922,8 +1092,10 @@ def source_assets_for_script(script: dict) -> bool:
             else:
                 logger.warning("Script #%d: trend not found in DB, using stock B-roll only", script_id)
 
-    # Collect video candidates: user + scraped, score, pick best
+    # Collect video candidates: user + stock library (reuse) + AI (reuse) + scraped, score, pick best
     user_videos = _scan_user_videos()
+    stock_videos = _scan_stock_videos()
+    ai_videos = _scan_ai_videos()
     scraped_videos = []
     seen_scraped = set()
     for i, cue in enumerate(search_queries[:15]):
@@ -947,17 +1119,17 @@ def source_assets_for_script(script: dict) -> bool:
                     seen_scraped.add(kid)
                     scraped_videos.append({"source": "coverr", "raw": item, "searchable_text": cue})
 
-    all_video_candidates = user_videos + scraped_videos
+    all_video_candidates = user_videos + stock_videos + ai_videos + scraped_videos
     for c in all_video_candidates:
         c["_score"] = _score_visual_candidate(c, search_queries, category)
     # Apply rejection penalty
     for c in all_video_candidates:
-        if c.get("source") == "user":
+        if c.get("path") and not c.get("raw"):
             p = c.get("path")
             fname = Path(p).name if p else ""
             size_bytes, mtime_real = None, None
             try:
-                if p:
+                if p and Path(p).exists():
                     st = Path(p).stat()
                     size_bytes, mtime_real = st.st_size, st.st_mtime
             except (OSError, TypeError):
@@ -973,16 +1145,16 @@ def source_assets_for_script(script: dict) -> bool:
     for c in all_video_candidates:
         if assets_saved >= videos_per_script:
             break
-        if c.get("source") == "user":
-            path = c.get("path")
-            if path and path.exists():
-                insert_asset(
-                    conn, script_id=script_id, asset_type="video", source="user",
-                    source_id=None, local_path=str(path.resolve()), search_query="user_asset",
-                )
-                assets_saved += 1
-                logger.info("Script #%d: using user video (score %.1f) %s", script_id, c["_score"], path.name)
-        else:
+        if c.get("path") and not c.get("raw") and Path(c["path"]).exists():
+            path = c["path"]
+            src = c.get("source", "stock")
+            insert_asset(
+                conn, script_id=script_id, asset_type="video", source=src,
+                source_id=None, local_path=str(Path(path).resolve()), search_query=c.get("searchable_text", "reuse"),
+            )
+            assets_saved += 1
+            logger.info("Script #%d: using %s video (score %.1f) %s", script_id, src, c["_score"], Path(path).name)
+        elif c.get("raw"):
             prov = c["source"]
             item = c["raw"]
             cue = c.get("searchable_text", "")
@@ -994,6 +1166,7 @@ def source_assets_for_script(script: dict) -> bool:
             elif prov == "coverr":
                 path = download_coverr_video(item, STOCK_DIR)
             if path:
+                _write_stock_meta(path, search_query=cue, source=prov, asset_type="video", keywords=[cue])
                 if prov == "pexels":
                     insert_asset(
                         conn, script_id=script_id, asset_type="video", source="pexels",
@@ -1028,6 +1201,7 @@ def source_assets_for_script(script: dict) -> bool:
                             continue
                         path = download_pexels_video(item, STOCK_DIR)
                         if path:
+                            _write_stock_meta(path, search_query=cue, source="pexels", asset_type="video", keywords=[cue])
                             seen_scraped.add(kid)
                             insert_asset(conn, script_id=script_id, asset_type="video", source="pexels",
                                 source_id=str(item.get("id")), source_url=item.get("url"),
@@ -1042,6 +1216,7 @@ def source_assets_for_script(script: dict) -> bool:
                             continue
                         path = download_pixabay_video(item, STOCK_DIR)
                         if path:
+                            _write_stock_meta(path, search_query=cue, source="pixabay", asset_type="video", keywords=[cue])
                             seen_scraped.add(kid)
                             insert_asset(conn, script_id=script_id, asset_type="video", source="pixabay",
                                 source_id=str(item.get("id")), local_path=str(path), search_query=cue)
@@ -1054,6 +1229,7 @@ def source_assets_for_script(script: dict) -> bool:
                             continue
                         path = download_coverr_video(item, STOCK_DIR)
                         if path:
+                            _write_stock_meta(path, search_query=cue, source="coverr", asset_type="video", keywords=[cue])
                             seen_scraped.add(kid)
                             insert_asset(conn, script_id=script_id, asset_type="video", source="coverr",
                                 source_id=str(item.get("id")), local_path=str(path), search_query=cue,
@@ -1063,8 +1239,30 @@ def source_assets_for_script(script: dict) -> bool:
                 if assets_saved >= videos_per_script:
                     break
 
-    # Collect image candidates: user + scraped, score, pick best
+    # AI video fallback when stock insufficient
+    if assets_saved < videos_per_script and (cfg("sourcing.ai_video_providers") or []):
+        ai_fallback = cfg("sourcing.ai_video_fallback_only") is not False
+        if ai_fallback or assets_saved == 0:
+            try:
+                from agents.ai_video_providers import generate_ai_video, write_ai_video_meta
+                prompt = ", ".join(search_queries[:3]) if search_queries else "cinematic vertical footage"
+                est_dur = script.get("estimated_duration") or 30
+                ai_dir = STOCK_DIR / "ai"
+                ai_dir.mkdir(parents=True, exist_ok=True)
+                path = generate_ai_video(prompt, duration=min(8, est_dur), dest_dir=ai_dir)
+                if path and path.exists():
+                    write_ai_video_meta(path, keywords=search_queries[:5] or [prompt], category=category, prompt=prompt, provider="segmind")
+                    insert_asset(conn, script_id=script_id, asset_type="video", source="segmind",
+                        source_id=None, local_path=str(path), search_query=prompt)
+                    assets_saved += 1
+                    logger.info("Script #%d: AI video generated via Segmind", script_id)
+            except Exception as e:
+                logger.warning("AI video fallback failed: %s", e)
+
+    # Collect image candidates: user + stock library (reuse) + AI (reuse) + scraped, score, pick best
     user_images = _scan_user_images()
+    stock_images = _scan_stock_images()
+    ai_images = _scan_ai_images()
     scraped_images = []
     seen_img = set()
     image_providers = cfg("sourcing.image_providers") or ["pexels", "pixabay", "unsplash", "openverse"]
@@ -1085,17 +1283,17 @@ def source_assets_for_script(script: dict) -> bool:
                 seen_img.add(kid)
                 scraped_images.append({"source": prov, "raw": item, "searchable_text": q})
 
-    all_image_candidates = user_images + scraped_images
+    all_image_candidates = user_images + stock_images + ai_images + scraped_images
     for c in all_image_candidates:
         c["_score"] = _score_visual_candidate(c, search_queries, category)
     # Apply rejection penalty
     for c in all_image_candidates:
-        if c.get("source") == "user":
+        if c.get("path") and not c.get("raw"):
             p = c.get("path")
             fname = Path(p).name if p else ""
             size_bytes, mtime_real = None, None
             try:
-                if p:
+                if p and Path(p).exists():
                     st = Path(p).stat()
                     size_bytes, mtime_real = st.st_size, st.st_mtime
             except (OSError, TypeError):
@@ -1111,15 +1309,16 @@ def source_assets_for_script(script: dict) -> bool:
     for c in all_image_candidates:
         if images_saved >= 3:
             break
-        if c.get("source") == "user":
-            path = c.get("path")
-            if path and path.exists():
-                insert_asset(
-                    conn, script_id=script_id, asset_type="image", source="user",
-                    source_id=None, local_path=str(path.resolve()), search_query="user_asset",
-                )
-                images_saved += 1
-        else:
+        if c.get("path") and not c.get("raw") and Path(c["path"]).exists():
+            path = c["path"]
+            src = c.get("source", "stock")
+            insert_asset(
+                conn, script_id=script_id, asset_type="image", source=src,
+                source_id=None, local_path=str(Path(path).resolve()), search_query=c.get("searchable_text", "reuse"),
+            )
+            images_saved += 1
+            logger.info("Script #%d: using %s image (score %.1f) %s", script_id, src, c.get("_score", 0), Path(path).name)
+        elif c.get("raw"):
             prov = c["source"]
             item = c["raw"]
             q = c.get("searchable_text", "")
@@ -1133,6 +1332,7 @@ def source_assets_for_script(script: dict) -> bool:
             elif prov == "openverse":
                 path = download_openverse_image(item, IMAGES_DIR)
             if path:
+                _write_stock_meta(path, search_query=q, source=prov, asset_type="image", keywords=[q] if q else [])
                 if prov == "pexels":
                     insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
                         source_id=str(item.get("id")), source_url=item.get("url"),
@@ -1161,6 +1361,7 @@ def source_assets_for_script(script: dict) -> bool:
                     continue
                 path = download_pexels_image(photo, IMAGES_DIR)
                 if path:
+                    _write_stock_meta(path, search_query=q, source="pexels", asset_type="image", keywords=[q])
                     seen_img.add(kid)
                     insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
                         source_id=str(photo.get("id")), source_url=photo.get("url"),
@@ -1168,6 +1369,26 @@ def source_assets_for_script(script: dict) -> bool:
                     images_saved += 1
                     if images_saved >= 3:
                         break
+
+    # AI image fallback when stock insufficient
+    if images_saved < 3 and (cfg("sourcing.ai_image_providers") or []):
+        ai_fallback = cfg("sourcing.ai_image_fallback_only") is not False
+        if ai_fallback or images_saved == 0:
+            try:
+                from agents.ai_image_providers import generate_ai_image, write_ai_image_meta
+                prompt_parts = search_queries[:3] if search_queries else ["cinematic vertical", "aesthetic"]
+                prompt = f"Cinematic vertical image, {', '.join(prompt_parts)}, 9:16 portrait, high quality"
+                ai_dir = IMAGES_DIR / "ai"
+                ai_dir.mkdir(parents=True, exist_ok=True)
+                path = generate_ai_image(prompt, aspect_ratio=cfg("sourcing.ai_image_aspect_ratio") or "9:16", dest_dir=ai_dir)
+                if path and path.exists():
+                    write_ai_image_meta(path, keywords=search_queries[:5] or prompt_parts, category=category, prompt=prompt, provider="flux")
+                    insert_asset(conn, script_id=script_id, asset_type="image", source="flux",
+                        source_id=None, local_path=str(path), search_query=prompt)
+                    images_saved += 1
+                    logger.info("Script #%d: AI image generated via Flux", script_id)
+            except Exception as e:
+                logger.warning("AI image fallback failed: %s", e)
 
     # Step 4: Source background music (with script keywords and topic augmentation)
     music_override = script.get("music_override_path")
