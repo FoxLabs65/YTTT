@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import re
 import sys
 from pathlib import Path
 
@@ -290,6 +291,8 @@ Use **Voice pool** above to rotate through multiple voices for variety within a 
 - **Google Cloud TTS** — Neural2 voices; pay-per-use
 
 These would require custom integration. Edge-TTS is free and works out of the box.
+
+**Script markup for pacing:** Use `[[pause]]` or `[[long pause]]` in script_body for deliberate beats. Ideation prompts encourage varied punctuation.
 """)
 
         rate = sourcing.get("voiceover_rate", "-5%")
@@ -300,6 +303,34 @@ These would require custom integration. Edge-TTS is free and works out of the bo
             help="Negative = slower, positive = faster",
         )
         sourcing["voiceover_rate"] = f"{val:+d}%"
+
+        pitch = sourcing.get("voiceover_pitch", "+0Hz")
+        try:
+            pitch_val = int(re.sub(r"[^\d\-+]", "", pitch) or "0")
+        except ValueError:
+            pitch_val = 0
+        pitch_val = st.slider(
+            "Pitch (Hz)", min_value=-20, max_value=20,
+            value=max(-20, min(20, pitch_val)),
+            key="cfg_vo_pitch",
+            help="Slight variation to reduce flatness; -5Hz lower, +5Hz higher",
+        )
+        sourcing["voiceover_pitch"] = f"{pitch_val:+d}Hz"
+
+        vol = sourcing.get("voiceover_volume", "+0%")
+        try:
+            vol_val = int(re.sub(r"[^\d\-+]", "", vol) or "0")
+        except ValueError:
+            vol_val = 0
+        vol_val = st.slider(
+            "Volume (%)", min_value=-30, max_value=30,
+            value=max(-30, min(30, vol_val)),
+            key="cfg_vo_volume",
+            help="Slight boost for emphasis; +10% slightly louder",
+        )
+        sourcing["voiceover_volume"] = f"{vol_val:+d}%"
+
+        st.caption("Per-category overrides: edit voiceover_prosody in settings YAML.")
 
     # ── Suno AI Music ───────────────────────────────────────────
     with st.expander("Suno AI Music"):
@@ -419,9 +450,17 @@ These would require custom integration. Edge-TTS is free and works out of the bo
         if not isinstance(ai_img_prov, list):
             ai_img_prov = []
         flux_enabled = "flux" in ai_img_prov
-        val = st.checkbox("Enable Flux (AI images)", value=flux_enabled, key="cfg_flux_enabled",
+        segmind_flux_enabled = "segmind_flux" in ai_img_prov
+        val_flux = st.checkbox("Enable Flux (Replicate)", value=flux_enabled, key="cfg_flux_enabled",
             help="Use Replicate Flux when stock images score low.")
-        _set(cfg, "sourcing.ai_image_providers", ["flux"] if val else [])
+        val_sf = st.checkbox("Enable Segmind Flux (same key as video)", value=segmind_flux_enabled, key="cfg_segmind_flux_enabled",
+            help="Use Segmind Fast Flux for images; same API key as Segmind video.")
+        providers = []
+        if val_sf:
+            providers.append("segmind_flux")
+        if val_flux:
+            providers.append("flux")
+        _set(cfg, "sourcing.ai_image_providers", providers)
 
         val = st.checkbox("AI image fallback only", value=sourcing_top.get("ai_image_fallback_only", True),
             key="cfg_ai_img_fallback", help="Only use AI when stock fails.")
@@ -748,16 +787,18 @@ def _test_flux(token: str):
         st.error("No Replicate token configured")
         return
     try:
-        import replicate
-        import os
-        os.environ["REPLICATE_API_TOKEN"] = token
-        output = replicate.run("black-forest-labs/flux-schnell", input={"prompt": "test", "aspect_ratio": "1:1"})
-        if output:
+        import requests
+        r = requests.get(
+            "https://api.replicate.com/v1/account",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        if r.status_code == 200:
             st.success("Flux: connected")
+        elif r.status_code == 401:
+            st.error("Flux: invalid API token")
         else:
-            st.warning("Flux: no output (check token)")
-    except ImportError:
-        st.error("Install replicate: pip install replicate")
+            st.error(f"Flux: HTTP {r.status_code}")
     except Exception as e:
         st.error(f"Flux: {e}")
 
@@ -778,6 +819,10 @@ def _test_segmind(key: str):
             st.success("Segmind: connected")
         elif r.status_code == 401:
             st.error("Segmind: invalid API key")
+        elif r.status_code == 406:
+            st.warning(
+                "Segmind: insufficient credits (HTTP 406). Add credits at cloud.segmind.com/console/billing (min $10). API key is valid."
+            )
         else:
             st.error(f"Segmind: HTTP {r.status_code}")
     except Exception as e:

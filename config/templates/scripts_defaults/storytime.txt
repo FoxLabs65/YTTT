@@ -16,6 +16,7 @@ Generate {n} original storytime short video scripts (30-60 seconds each). Each s
 IMPORTANT structure rules:
 - "hook" is a SHORT text-only overlay shown on screen in the first 2 seconds (NOT narrated separately)
 - "script_body" is the COMPLETE voiceover narration from start to finish, including the opening hook line and the full story. Do NOT repeat the hook as a separate sentence -- weave it naturally into the opening of the body.
+- Use varied punctuation for natural pacing: commas, dashes, rhetorical questions, ellipses (...), and [[pause]] or [[long pause]] for dramatic beats. Avoid flat run-on sentences.
 - "cta" is a SHORT text-only overlay shown at the end (NOT narrated separately)
 
 Return ONLY a JSON array. Each element must have these exact keys:

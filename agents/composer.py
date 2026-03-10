@@ -524,15 +524,18 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
 
         try:
             text_arr = _create_text_image(text, font_size, w, font_name=font_name)
-            txt_clip = (
-                ImageClip(text_arr, transparent=True)
-                .with_duration(dur)
-                .with_start(current_time)
-                .with_position(("center", y_pos))
-            )
-            overlay_clips.append(txt_clip)
+            if text_arr.size == 0 or (len(text_arr.shape) >= 2 and (text_arr.shape[0] == 0 or text_arr.shape[1] == 0)):
+                logger.warning("Script #%d: text overlay produced empty image for segment, skipping", script_id)
+            else:
+                txt_clip = (
+                    ImageClip(text_arr, transparent=True)
+                    .with_duration(dur)
+                    .with_start(current_time)
+                    .with_position(("center", y_pos))
+                )
+                overlay_clips.append(txt_clip)
         except Exception as e:
-            logger.warning("Text overlay failed: %s", e)
+            logger.warning("Text overlay failed for script #%d: %s", script_id, e)
 
         current_time += dur
 
@@ -545,16 +548,23 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
     if voiceover_assets:
         try:
             vo = AudioFileClip(voiceover_assets[0]["local_path"])
-            max_vo = final_video.duration - hook_offset
-            if vo.duration > max_vo:
-                vo = vo.subclipped(0, max_vo)
-            # Delay voiceover to start after the visual-only hook
-            if hook_offset > 0:
-                vo = vo.with_start(hook_offset)
-                logger.info("Script #%d: voiceover delayed %.1fs for hook", script_id, hook_offset)
-            audio_tracks.append(vo)
+            if vo.duration <= 0:
+                logger.warning("Script #%d: voiceover has zero duration, skipping", script_id)
+                vo.close()
+            else:
+                max_vo = final_video.duration - hook_offset
+                if max_vo <= 0:
+                    vo.close()
+                else:
+                    if vo.duration > max_vo:
+                        vo = vo.subclipped(0, max_vo)
+                    # Delay voiceover to start after the visual-only hook
+                    if hook_offset > 0:
+                        vo = vo.with_start(hook_offset)
+                        logger.info("Script #%d: voiceover delayed %.1fs for hook", script_id, hook_offset)
+                    audio_tracks.append(vo)
         except Exception as e:
-            logger.warning("Failed to load voiceover: %s", e)
+            logger.warning("Failed to load voiceover for script #%d: %s", script_id, e)
 
     music_use = music_assets
     override_path = script.get("music_override_path")
@@ -563,14 +573,42 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
     if music_use:
         try:
             music = AudioFileClip(music_use[0]["local_path"])
-            if music.duration < final_video.duration:
-                music = music.with_effects([vfx.Loop(duration=final_video.duration)])
-            else:
-                music = music.subclipped(0, final_video.duration)
-            music = music.with_volume_scaled(conf["music_volume"])
-            audio_tracks.append(music)
+            music_path = music_use[0]["local_path"]
+            min_dur = float(cfg("sourcing.music.min_music_duration_seconds") or 5)
+            if music.duration <= 0:
+                logger.warning("Script #%d: music has zero duration, trying fallback: %s", script_id, Path(music_path).name)
+                music.close()
+                from agents.music_scraper import get_fallback_music_for_script
+                fallback_path = get_fallback_music_for_script(script_id, script, excluded_path=music_path)
+                if fallback_path and fallback_path.exists():
+                    music = AudioFileClip(str(fallback_path))
+                    music_path = str(fallback_path)
+                else:
+                    music = None
+            elif music.duration < min_dur:
+                logger.warning(
+                    "Script #%d: music too short (%.1fs), trying fallback to avoid render buffer errors: %s",
+                    script_id, music.duration, Path(music_path).name,
+                )
+                music.close()
+                from agents.music_scraper import get_fallback_music_for_script
+                fallback_path = get_fallback_music_for_script(script_id, script, excluded_path=music_path)
+                if fallback_path and fallback_path.exists():
+                    music = AudioFileClip(str(fallback_path))
+                    music_path = str(fallback_path)
+                else:
+                    music = None
+            if music is not None and music.duration >= min_dur:
+                if music.duration < final_video.duration:
+                    music = music.with_effects([vfx.Loop(duration=final_video.duration)])
+                else:
+                    music = music.subclipped(0, final_video.duration)
+                music = music.with_volume_scaled(conf["music_volume"])
+                audio_tracks.append(music)
+            elif music is not None:
+                music.close()
         except Exception as e:
-            logger.warning("Failed to load music: %s", e)
+            logger.warning("Failed to load music for script #%d: %s", script_id, e)
 
     if audio_tracks:
         final_audio = CompositeAudioClip(audio_tracks)
@@ -592,7 +630,13 @@ def compose_video(script: dict, assets: list[dict]) -> Path | None:
             logger=None,
         )
     except Exception as e:
-        logger.error("Render failed for script #%d: %s", script_id, e)
+        logger.error(
+            "Render failed for script #%d: %s (videos=%d, images=%d, voiceover=%s, music=%s)",
+            script_id, e,
+            len(video_assets), len(image_assets),
+            "yes" if voiceover_assets else "no",
+            "yes" if music_use else "no",
+        )
         return None
     finally:
         final_video.close()
@@ -777,8 +821,10 @@ def compose_for_script(script: dict) -> bool:
     return True
 
 
-def run_composer() -> dict:
-    """Compose videos for all scripts with ready assets, recovering stuck jobs first."""
+def run_composer(script_id: int | None = None) -> dict:
+    """Compose videos for scripts with ready assets.
+    When script_id is provided (e.g. from regenerate), only that script is processed.
+    """
     logger.info("Starting video composition...")
     conn = get_connection()
 
@@ -788,6 +834,13 @@ def run_composer() -> dict:
         logger.info("Recovered %d script(s) stuck in 'composing' status", reset_count)
 
     scripts = get_scripts_by_status(conn, "assets_ready")
+    if script_id is not None:
+        scripts = [s for s in scripts if s.get("id") == script_id]
+        if not scripts:
+            logger.info("Script #%d not in assets_ready, nothing to compose", script_id)
+            conn.close()
+            return {"scripts_processed": 0, "success": 0}
+        logger.info("Composing only script #%d (regenerate)", script_id)
     conn.close()
 
     if not scripts:

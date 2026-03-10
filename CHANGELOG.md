@@ -2,6 +2,33 @@
 
 All notable changes to the Shorts Engine are documented here.
 
+## [1.10.0] - 2026-02-24
+
+### Added
+- **Asset sourcing flow:** User assets first, then external, then AI
+  - Two-phase selection for video and image: fill from user pool (scored), then external for remaining slots
+  - Regeneration clears `user_selected_asset_paths` so new user folder files are always considered
+- **User assets protection:** Cleanup never deletes files in `assets/stock_footage/user/`, `assets/images/user/`, or `assets/music/user/` — preserves user library for future videos
+- **TTS prosody:** Pitch and volume controls for less flat voiceovers
+  - Config: `voiceover_pitch`, `voiceover_volume`; per-category overrides via `voiceover_prosody`
+  - Setup: Pitch (Hz) and Volume (%) sliders
+- **Script markup for pacing:** `[[pause]]` and `[[long pause]]` in script_body for deliberate beats
+- **Ideation prompts:** All templates now encourage varied punctuation (commas, dashes, questions, ellipses, pause markup) for natural voiceover pacing
+
+### Changed
+- **Regenerate scope:** Composer now processes only the requested script when regenerating (not all assets_ready scripts)
+- **Sourcing:** Video/image selection uses user pool first, external pool for remaining slots; user folders always scraped on generation and regeneration
+
+### Fixed
+- Regenerate composing multiple scripts (97, 91, 81) when only one (98) was requested
+- User assets deleted by cleanup when videos were rejected or archived
+
+### Documentation
+- `docs/ASSET_SOURCING_FLOW_MAPPING.md` — full asset flow, user protection
+- `docs/REGENERATION_LOG_ANALYSIS.md` — log analysis and fixes
+
+---
+
 ## [1.9.0] - 2026-02-24
 
 ### Added

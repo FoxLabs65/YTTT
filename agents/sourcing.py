@@ -450,11 +450,35 @@ def search_pixabay_music(query: str, count: int = 3) -> list[dict]:
 
 # --- Voiceover (edge-tts) ---
 
-async def _generate_voiceover_async(text: str, voice: str, output_path: Path,
-                                    rate: str = "+0%", meta_path: Path | None = None):
+async def _generate_voiceover_async(
+    text: str,
+    voice: str,
+    output_path: Path,
+    rate: str = "+0%",
+    pitch: str = "+0Hz",
+    volume: str = "+0%",
+    meta_path: Path | None = None,
+):
     import edge_tts
-    communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
+    communicate = edge_tts.Communicate(
+        text,
+        voice,
+        rate=rate,
+        pitch=pitch or "+0Hz",
+        volume=volume or "+0%",
+        boundary="WordBoundary",
+    )
     await communicate.save(str(output_path), metadata_fname=str(meta_path) if meta_path else None)
+
+
+def _expand_pause_markup(text: str) -> str:
+    """Convert script markup to TTS pause cues. Markup is stripped for display elsewhere.
+    [[pause]] -> ... (short pause)
+    [[long pause]] -> .... (longer dramatic beat)
+    """
+    text = re.sub(r"\[\[long\s*pause\]\]", ".... ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[\[pause\]\]", "... ", text, flags=re.IGNORECASE)
+    return text
 
 
 def _humanise_text(text: str) -> str:
@@ -462,12 +486,12 @@ def _humanise_text(text: str) -> str:
 
     edge-tts respects commas, periods, and ellipses as pause cues.
     This function:
-      - Adds short pauses after commas/colons (edge-tts already handles these)
       - Inserts medium pauses between sentences by adding an ellipsis after periods
       - Adds a longer pause before dramatic sentences starting with "But", "So", "And"
       - Converts "..." in the script to a real hesitation pause
+    ([[pause]] markup is expanded by caller before this.)
     """
-    # Normalise whitespace first
+    # Normalise whitespace
     text = re.sub(r"\s+", " ", text).strip()
 
     # Add a beat between sentences: ". X" -> "... X" (edge-tts pauses on ellipsis)
@@ -507,14 +531,22 @@ def generate_voiceover(
                 voice = random.choice(cat_voice)
             else:
                 voice = cat_voice if isinstance(cat_voice, str) else "en-US-AndrewMultilingualNeural"
-    rate = cfg("sourcing.voiceover_rate") or "-5%"
+    # Prosody: category preset overrides global defaults
+    prosody = cfg("sourcing.voiceover_prosody") or {}
+    cat_prosody = prosody.get(category, {}) if isinstance(prosody, dict) else {}
+    rate = cat_prosody.get("rate") or cfg("sourcing.voiceover_rate") or "-5%"
+    pitch = cat_prosody.get("pitch") or cfg("sourcing.voiceover_pitch") or "+0Hz"
+    volume = cat_prosody.get("volume") or cfg("sourcing.voiceover_volume") or "+0%"
 
     stem = f"vo_{script_id}_{uuid.uuid4().hex[:8]}"
     output_path = VOICEOVER_DIR / f"{stem}.mp3"
     meta_path = VOICEOVER_DIR / f"{stem}.json"
 
+    # Expand pause markup first (before stripping, since [.*?] would match inside [[pause]])
+    clean_text = _expand_pause_markup(text)
+
     # Strip visual cues from script for voiceover
-    clean_text = re.sub(r"\[.*?\]", "", text).strip()
+    clean_text = re.sub(r"\[.*?\]", "", clean_text).strip()
     clean_text = re.sub(r"\s+", " ", clean_text)
 
     # Remove trailing period from Mr/Mrs/Ms/Dr etc. — TTS treats "." as sentence end and adds long pause
@@ -524,12 +556,19 @@ def generate_voiceover(
         logger.warning("Empty text after cleaning for script %d", script_id)
         return None, None
 
-    # Humanise text with natural pauses
+    # Humanise text with natural pauses (skip _expand_pause_markup - already done above)
     clean_text = _humanise_text(clean_text)
 
     try:
-        asyncio.run(_generate_voiceover_async(clean_text, voice, output_path, rate, meta_path))
-        logger.info("Generated voiceover: %s (%s, rate=%s)", output_path.name, voice, rate)
+        asyncio.run(
+            _generate_voiceover_async(
+                clean_text, voice, output_path, rate, pitch, volume, meta_path
+            )
+        )
+        logger.info(
+            "Generated voiceover: %s (%s, rate=%s, pitch=%s)",
+            output_path.name, voice, rate, pitch,
+        )
         return output_path, meta_path
     except Exception as e:
         logger.error("Voiceover generation failed for script %d: %s", script_id, e)
@@ -556,7 +595,20 @@ STOP_WORDS = frozenset({
     "through", "to", "up", "us", "use", "want", "way", "well", "with",
     "know", "don", "doesn", "didn", "won", "wouldn", "couldn", "shouldn",
     "show", "ever", "never", "literally", "actually", "basically",
+    # Contractions (apostrophe-normalized): you're->youre, it's->its, etc.
+    "youre", "youve", "theyre", "were", "hes", "shes", "theres", "thats",
+    "whats", "whos", "ive", "weve", "theyve", "wed", "youd", "theyd",
+    "isnt", "arent", "wasnt", "werent", "hasnt", "hadnt", "doesnt", "didnt",
+    "wont", "cant", "couldnt", "shouldnt", "wouldnt",
 })
+
+# Words too vague for stock search (includes STOP_WORDS + contractions)
+VAGUE_SEARCH_TERMS = STOP_WORDS
+
+
+def _normalize_for_stop_check(text: str) -> str:
+    """Lowercase and collapse apostrophes for stop-word lookup (e.g. you're -> youre)."""
+    return re.sub(r"'", "", text.lower())
 
 
 def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> list[str]:
@@ -591,8 +643,10 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
     words = body.split()
 
     # Find capitalized proper nouns / names (e.g. "Prince", "Mrs Henderson")
+    # Skip contractions (You're, It's, There's) via normalized stop check
     for i, w in enumerate(words):
-        if w and w[0].isupper() and w.lower() not in STOP_WORDS and len(w) > 2:
+        w_norm = _normalize_for_stop_check(w) if w else ""
+        if w and w[0].isupper() and w_norm not in STOP_WORDS and len(w) > 2:
             if i > 0 and words[i - 1] and words[i - 1][0].isupper():
                 keywords.append(f"{words[i-1]} {w}")
             else:
@@ -662,14 +716,18 @@ def _extract_script_keywords(script_body: str, title: str, tags: list[str]) -> l
         if len(clean) > 2 and clean.lower() not in STOP_WORDS:
             keywords.append(clean)
 
-    # Deduplicate while preserving order
+    # Deduplicate while preserving order; reject vague/non-visual keywords
     seen = set()
     unique = []
     for k in keywords:
         k_lower = k.lower().strip()
-        if k_lower and k_lower not in seen and len(k_lower) > 2:
-            seen.add(k_lower)
-            unique.append(k)
+        k_norm = _normalize_for_stop_check(k)
+        if not k_lower or k_lower in seen or len(k_lower) <= 2:
+            continue
+        if k_norm in VAGUE_SEARCH_TERMS:
+            continue
+        seen.add(k_lower)
+        unique.append(k)
 
     return unique[:25]
 
@@ -689,26 +747,36 @@ MAX_SEARCH_QUERY_WORDS = 4
 
 
 def _shorten_keywords_for_search(keywords: list[str], max_words: int = MAX_SEARCH_QUERY_WORDS) -> list[str]:
-    """Shorten keyword phrases for stock API search. Prefer 2-4 word core phrases."""
+    """Shorten keyword phrases for stock API search. Prefer 2-4 word core phrases.
+    Drops vague terms (contractions, pronouns) that produce irrelevant results."""
     result = []
     seen = set()
     for kw in keywords:
         if not kw or len(kw) < 3:
             continue
         words = kw.lower().split()
-        # Drop filler words and take up to max_words
-        kept = [w for w in words if w not in SEARCH_FILLER_WORDS and len(w) > 1]
+        # Drop filler and vague words
+        kept = [
+            w for w in words
+            if w not in SEARCH_FILLER_WORDS
+            and _normalize_for_stop_check(w) not in VAGUE_SEARCH_TERMS
+            and len(w) > 1
+        ]
+        if not kept:
+            kept = [w for w in words if _normalize_for_stop_check(w) not in VAGUE_SEARCH_TERMS]
         if not kept:
             kept = words[-max_words:] if len(words) > max_words else words
         short = " ".join(kept[:max_words]) if kept else kw
         short = re.sub(r"\s+", " ", short).strip()
-        if short and short not in seen and len(short) > 2:
+        short_norm = _normalize_for_stop_check(short)
+        if short and short not in seen and len(short) > 2 and short_norm not in VAGUE_SEARCH_TERMS:
             seen.add(short)
             result.append(short)
         # Also add a 2-word variant for long phrases (e.g. "ball trajectory" from "technical diagram of ball trajectory")
         if len(kept) > 3:
             core = " ".join(kept[-2:])  # last two words often = main noun phrase
-            if core and core not in seen and len(core) > 3:
+            core_norm = _normalize_for_stop_check(core) if core else ""
+            if core and core not in seen and len(core) > 3 and core_norm not in VAGUE_SEARCH_TERMS:
                 seen.add(core)
                 result.append(core)
     return result[:20]
@@ -727,6 +795,39 @@ CATEGORY_VISUAL_FALLBACKS = {
     "wellbeing": ["self care routine", "healthy lifestyle", "nature walk", "morning sunlight"],
     "viral": ["social media trending", "crowd reaction", "neon lights", "fast motion city"],
 }
+
+# Lighting/mood cues per category for AI image prompts (Segmind Flux/Qwen guides)
+CATEGORY_LIGHTING_MAP = {
+    "motivational": "golden hour, uplifting atmosphere",
+    "funny": "bright natural light, cheerful",
+    "meme": "neon accents, vibrant colors",
+    "news": "professional lighting, dramatic contrast",
+    "storytime": "soft cinematic lighting, warm tones",
+    "howto": "clean studio light, clear and focused",
+    "pov": "natural daylight, relatable setting",
+    "reaction": "studio setup, focused lighting",
+    "wellness": "soft morning light, peaceful",
+    "wellbeing": "warm natural light, serene",
+    "viral": "dynamic lighting, eye-catching",
+}
+
+
+def _build_ai_video_prompt(search_queries: list[str], category: str) -> str:
+    """Build structured video prompt per Segmind Veo guides: subject → motion → camera → style."""
+    subject = search_queries[0] if search_queries else "cinematic scene"
+    motion = search_queries[1] if len(search_queries) > 1 else "smooth movement"
+    style = search_queries[2] if len(search_queries) > 2 else "soft cinematic light"
+    lighting = CATEGORY_LIGHTING_MAP.get(category, "soft cinematic light")
+    return f"Medium shot of {subject}. {motion.capitalize()}. Camera tracks smoothly from the side. {lighting}, ambient atmosphere."
+
+
+def _build_ai_image_prompt(search_queries: list[str], category: str) -> str:
+    """Build structured image prompt per Segmind Flux/Qwen guides: subject → style → environment → lighting."""
+    subject = search_queries[0] if search_queries else "cinematic scene"
+    env = search_queries[1] if len(search_queries) > 1 else "aesthetic background"
+    mood = search_queries[2] if len(search_queries) > 2 else "high quality"
+    lighting = CATEGORY_LIGHTING_MAP.get(category, "soft lighting")
+    return f"{subject}, cinematic vertical composition, {env}, {lighting}, 9:16 portrait, {mood}"
 
 
 def _expand_visual_queries(visual_cues: list[str], title: str, category: str,
@@ -1034,6 +1135,8 @@ def source_assets_for_script(script: dict) -> bool:
     assets_saved = 0
     images_saved = 0
     video_providers = cfg("sourcing.video_providers") or ["pexels", "pixabay", "coverr"]
+    force_ai_video = script.get("force_ai_video_override") == 1
+    force_ai_image = script.get("force_ai_image_override") == 1
 
     # User-selected override: insert user-picked assets first, in order
     user_selected = script.get("user_selected_asset_paths")
@@ -1092,102 +1195,117 @@ def source_assets_for_script(script: dict) -> bool:
             else:
                 logger.warning("Script #%d: trend not found in DB, using stock B-roll only", script_id)
 
-    # Collect video candidates: user + stock library (reuse) + AI (reuse) + scraped, score, pick best
+    # Two-phase video selection: user pool first, then external pool
+    # When force_ai_video, skip stock/scraped and go directly to AI
     user_videos = _scan_user_videos()
-    stock_videos = _scan_stock_videos()
+    stock_videos = [] if force_ai_video else _scan_stock_videos()
     ai_videos = _scan_ai_videos()
     scraped_videos = []
     seen_scraped = set()
-    for i, cue in enumerate(search_queries[:15]):
-        prov = video_providers[i % len(video_providers)] if video_providers else "pexels"
-        if prov == "pexels":
-            for item in search_pexels_videos(cue, count=3):
-                kid = ("pexels", str(item.get("id", "")))
-                if kid not in seen_scraped:
-                    seen_scraped.add(kid)
-                    scraped_videos.append({"source": "pexels", "raw": item, "searchable_text": cue})
-        elif prov == "pixabay":
-            for item in search_pixabay_videos(cue, count=3):
-                kid = ("pixabay", str(item.get("id", "")))
-                if kid not in seen_scraped:
-                    seen_scraped.add(kid)
-                    scraped_videos.append({"source": "pixabay", "raw": item, "searchable_text": cue})
-        elif prov == "coverr":
-            for item in search_coverr_videos(cue, count=3):
-                kid = ("coverr", str(item.get("id", "")))
-                if kid not in seen_scraped:
-                    seen_scraped.add(kid)
-                    scraped_videos.append({"source": "coverr", "raw": item, "searchable_text": cue})
-
-    all_video_candidates = user_videos + stock_videos + ai_videos + scraped_videos
-    for c in all_video_candidates:
-        c["_score"] = _score_visual_candidate(c, search_queries, category)
-    # Apply rejection penalty
-    for c in all_video_candidates:
-        if c.get("path") and not c.get("raw"):
-            p = c.get("path")
-            fname = Path(p).name if p else ""
-            size_bytes, mtime_real = None, None
-            try:
-                if p and Path(p).exists():
-                    st = Path(p).stat()
-                    size_bytes, mtime_real = st.st_size, st.st_mtime
-            except (OSError, TypeError):
-                pass
-            penalty = get_rejection_penalty(conn, fname, "video", category, "Poor visual quality", size_bytes=size_bytes, mtime_real=mtime_real)
-        else:
-            raw = c.get("raw", {})
-            fname = f"{c['source']}_{raw.get('id', '')}.mp4"
-            penalty = get_rejection_penalty(conn, fname, "video", category, "Poor visual quality")
-        c["_score"] -= penalty * PENALTY_PER_REJECTION
-    all_video_candidates.sort(key=lambda x: x["_score"], reverse=True)
-
-    for c in all_video_candidates:
-        if assets_saved >= videos_per_script:
-            break
-        if c.get("path") and not c.get("raw") and Path(c["path"]).exists():
-            path = c["path"]
-            src = c.get("source", "stock")
-            insert_asset(
-                conn, script_id=script_id, asset_type="video", source=src,
-                source_id=None, local_path=str(Path(path).resolve()), search_query=c.get("searchable_text", "reuse"),
-            )
-            assets_saved += 1
-            logger.info("Script #%d: using %s video (score %.1f) %s", script_id, src, c["_score"], Path(path).name)
-        elif c.get("raw"):
-            prov = c["source"]
-            item = c["raw"]
-            cue = c.get("searchable_text", "")
-            path = None
+    if not force_ai_video:
+        for i, cue in enumerate(search_queries[:15]):
+            prov = video_providers[i % len(video_providers)] if video_providers else "pexels"
             if prov == "pexels":
-                path = download_pexels_video(item, STOCK_DIR)
+                for item in search_pexels_videos(cue, count=3):
+                    kid = ("pexels", str(item.get("id", "")))
+                    if kid not in seen_scraped:
+                        seen_scraped.add(kid)
+                        scraped_videos.append({"source": "pexels", "raw": item, "searchable_text": cue})
             elif prov == "pixabay":
-                path = download_pixabay_video(item, STOCK_DIR)
+                for item in search_pixabay_videos(cue, count=3):
+                    kid = ("pixabay", str(item.get("id", "")))
+                    if kid not in seen_scraped:
+                        seen_scraped.add(kid)
+                        scraped_videos.append({"source": "pixabay", "raw": item, "searchable_text": cue})
             elif prov == "coverr":
-                path = download_coverr_video(item, STOCK_DIR)
-            if path:
-                _write_stock_meta(path, search_query=cue, source=prov, asset_type="video", keywords=[cue])
-                if prov == "pexels":
-                    insert_asset(
-                        conn, script_id=script_id, asset_type="video", source="pexels",
-                        source_id=str(item.get("id")), source_url=item.get("url"),
-                        local_path=str(path), search_query=cue,
-                        duration=item.get("duration"), width=item.get("width"), height=item.get("height"),
-                    )
-                elif prov == "pixabay":
-                    insert_asset(
-                        conn, script_id=script_id, asset_type="video", source="pixabay",
-                        source_id=str(item.get("id")), local_path=str(path), search_query=cue,
-                    )
-                elif prov == "coverr":
-                    insert_asset(
-                        conn, script_id=script_id, asset_type="video", source="coverr",
-                        source_id=str(item.get("id")), local_path=str(path), search_query=cue,
-                        duration=item.get("duration"), width=item.get("max_width"), height=item.get("max_height"),
-                    )
-                assets_saved += 1
+                for item in search_coverr_videos(cue, count=3):
+                    kid = ("coverr", str(item.get("id", "")))
+                    if kid not in seen_scraped:
+                        seen_scraped.add(kid)
+                        scraped_videos.append({"source": "coverr", "raw": item, "searchable_text": cue})
 
-    if assets_saved < 3:
+    def _score_and_penalize_video(candidates: list) -> None:
+        for c in candidates:
+            c["_score"] = _score_visual_candidate(c, search_queries, category)
+        for c in candidates:
+            if c.get("path") and not c.get("raw"):
+                p = c.get("path")
+                fname = Path(p).name if p else ""
+                size_bytes, mtime_real = None, None
+                try:
+                    if p and Path(p).exists():
+                        st = Path(p).stat()
+                        size_bytes, mtime_real = st.st_size, st.st_mtime
+                except (OSError, TypeError):
+                    pass
+                penalty = get_rejection_penalty(conn, fname, "video", category, "Poor visual quality", size_bytes=size_bytes, mtime_real=mtime_real)
+            else:
+                raw = c.get("raw", {})
+                fname = f"{c['source']}_{raw.get('id', '')}.mp4"
+                penalty = get_rejection_penalty(conn, fname, "video", category, "Poor visual quality")
+            c["_score"] -= penalty * PENALTY_PER_REJECTION
+
+    def _pick_videos_from_candidates(candidates: list) -> int:
+        n = 0
+        for c in candidates:
+            if assets_saved + n >= videos_per_script:
+                break
+            if c.get("path") and not c.get("raw") and Path(c["path"]).exists():
+                path = c["path"]
+                src = c.get("source", "stock")
+                insert_asset(
+                    conn, script_id=script_id, asset_type="video", source=src,
+                    source_id=None, local_path=str(Path(path).resolve()), search_query=c.get("searchable_text", "reuse"),
+                )
+                n += 1
+                logger.info("Script #%d: using %s video (score %.1f) %s", script_id, src, c["_score"], Path(path).name)
+            elif c.get("raw"):
+                prov = c["source"]
+                item = c["raw"]
+                cue = c.get("searchable_text", "")
+                path = None
+                if prov == "pexels":
+                    path = download_pexels_video(item, STOCK_DIR)
+                elif prov == "pixabay":
+                    path = download_pixabay_video(item, STOCK_DIR)
+                elif prov == "coverr":
+                    path = download_coverr_video(item, STOCK_DIR)
+                if path:
+                    _write_stock_meta(path, search_query=cue, source=prov, asset_type="video", keywords=[cue])
+                    if prov == "pexels":
+                        insert_asset(
+                            conn, script_id=script_id, asset_type="video", source="pexels",
+                            source_id=str(item.get("id")), source_url=item.get("url"),
+                            local_path=str(path), search_query=cue,
+                            duration=item.get("duration"), width=item.get("width"), height=item.get("height"),
+                        )
+                    elif prov == "pixabay":
+                        insert_asset(
+                            conn, script_id=script_id, asset_type="video", source="pixabay",
+                            source_id=str(item.get("id")), local_path=str(path), search_query=cue,
+                        )
+                    elif prov == "coverr":
+                        insert_asset(
+                            conn, script_id=script_id, asset_type="video", source="coverr",
+                            source_id=str(item.get("id")), local_path=str(path), search_query=cue,
+                            duration=item.get("duration"), width=item.get("max_width"), height=item.get("max_height"),
+                        )
+                    n += 1
+        return n
+
+    # Phase 1: fill from user pool first
+    user_pool = user_videos
+    _score_and_penalize_video(user_pool)
+    user_pool.sort(key=lambda x: x["_score"], reverse=True)
+    assets_saved += _pick_videos_from_candidates(user_pool)
+
+    # Phase 2: fill remaining from external pool
+    external_pool = stock_videos + ai_videos + scraped_videos
+    _score_and_penalize_video(external_pool)
+    external_pool.sort(key=lambda x: x["_score"], reverse=True)
+    assets_saved += _pick_videos_from_candidates(external_pool)
+
+    if not force_ai_video and assets_saved < 3:
         for cue in search_queries[:6]:
             if assets_saved >= videos_per_script:
                 break
@@ -1239,119 +1357,139 @@ def source_assets_for_script(script: dict) -> bool:
                 if assets_saved >= videos_per_script:
                     break
 
-    # AI video fallback when stock insufficient
-    if assets_saved < videos_per_script and (cfg("sourcing.ai_video_providers") or []):
+    # AI video fallback when stock insufficient, or when force_ai_video override
+    ai_video_providers = cfg("sourcing.ai_video_providers") or []
+    if assets_saved < videos_per_script and ai_video_providers:
         ai_fallback = cfg("sourcing.ai_video_fallback_only") is not False
-        if ai_fallback or assets_saved == 0:
-            try:
-                from agents.ai_video_providers import generate_ai_video, write_ai_video_meta
-                prompt = ", ".join(search_queries[:3]) if search_queries else "cinematic vertical footage"
-                est_dur = script.get("estimated_duration") or 30
-                ai_dir = STOCK_DIR / "ai"
-                ai_dir.mkdir(parents=True, exist_ok=True)
-                path = generate_ai_video(prompt, duration=min(8, est_dur), dest_dir=ai_dir)
-                if path and path.exists():
-                    write_ai_video_meta(path, keywords=search_queries[:5] or [prompt], category=category, prompt=prompt, provider="segmind")
-                    insert_asset(conn, script_id=script_id, asset_type="video", source="segmind",
-                        source_id=None, local_path=str(path), search_query=prompt)
-                    assets_saved += 1
-                    logger.info("Script #%d: AI video generated via Segmind", script_id)
-            except Exception as e:
-                logger.warning("AI video fallback failed: %s", e)
+        if force_ai_video or ai_fallback or assets_saved == 0:
+            from agents.ai_video_providers import generate_ai_video, write_ai_video_meta
+            est_dur = script.get("estimated_duration") or 30
+            ai_dir = STOCK_DIR / "ai"
+            ai_dir.mkdir(parents=True, exist_ok=True)
+            while assets_saved < videos_per_script:
+                try:
+                    prompt = _build_ai_video_prompt(search_queries, category)
+                    path = generate_ai_video(prompt, duration=min(8, est_dur), dest_dir=ai_dir)
+                    if path and path.exists():
+                        write_ai_video_meta(path, keywords=search_queries[:5] or [prompt], category=category, prompt=prompt, provider="segmind")
+                        insert_asset(conn, script_id=script_id, asset_type="video", source="segmind",
+                            source_id=None, local_path=str(path), search_query=prompt)
+                        assets_saved += 1
+                        logger.info("Script #%d: AI video generated via Segmind", script_id)
+                    else:
+                        break
+                except Exception as e:
+                    logger.warning("AI video fallback failed: %s", e)
+                    break
 
-    # Collect image candidates: user + stock library (reuse) + AI (reuse) + scraped, score, pick best
+    # Two-phase image selection: user pool first, then external pool
+    # When force_ai_image, skip stock/scraped and go directly to AI
     user_images = _scan_user_images()
-    stock_images = _scan_stock_images()
+    stock_images = [] if force_ai_image else _scan_stock_images()
     ai_images = _scan_ai_images()
     scraped_images = []
     seen_img = set()
-    image_providers = cfg("sourcing.image_providers") or ["pexels", "pixabay", "unsplash", "openverse"]
-    for i, q in enumerate(search_queries[:10]):
-        prov = image_providers[i % len(image_providers)] if image_providers else "pexels"
-        items = []
-        if prov == "pexels":
-            items = search_pexels_images(q, count=3)
-        elif prov == "pixabay":
-            items = search_pixabay_images(q, count=3)
-        elif prov == "unsplash":
-            items = search_unsplash_images(q, count=3)
-        elif prov == "openverse":
-            items = search_openverse_images(q, count=3)
-        for item in items[:2]:
-            kid = (prov, str(item.get("id", "")))
-            if kid not in seen_img:
-                seen_img.add(kid)
-                scraped_images.append({"source": prov, "raw": item, "searchable_text": q})
-
-    all_image_candidates = user_images + stock_images + ai_images + scraped_images
-    for c in all_image_candidates:
-        c["_score"] = _score_visual_candidate(c, search_queries, category)
-    # Apply rejection penalty
-    for c in all_image_candidates:
-        if c.get("path") and not c.get("raw"):
-            p = c.get("path")
-            fname = Path(p).name if p else ""
-            size_bytes, mtime_real = None, None
-            try:
-                if p and Path(p).exists():
-                    st = Path(p).stat()
-                    size_bytes, mtime_real = st.st_size, st.st_mtime
-            except (OSError, TypeError):
-                pass
-            penalty = get_rejection_penalty(conn, fname, "image", category, "Poor visual quality", size_bytes=size_bytes, mtime_real=mtime_real)
-        else:
-            raw = c.get("raw", {})
-            fname = f"{c['source']}_{raw.get('id', '')}.jpg"
-            penalty = get_rejection_penalty(conn, fname, "image", category, "Poor visual quality")
-        c["_score"] -= penalty * PENALTY_PER_REJECTION
-    all_image_candidates.sort(key=lambda x: x["_score"], reverse=True)
-
-    for c in all_image_candidates:
-        if images_saved >= 3:
-            break
-        if c.get("path") and not c.get("raw") and Path(c["path"]).exists():
-            path = c["path"]
-            src = c.get("source", "stock")
-            insert_asset(
-                conn, script_id=script_id, asset_type="image", source=src,
-                source_id=None, local_path=str(Path(path).resolve()), search_query=c.get("searchable_text", "reuse"),
-            )
-            images_saved += 1
-            logger.info("Script #%d: using %s image (score %.1f) %s", script_id, src, c.get("_score", 0), Path(path).name)
-        elif c.get("raw"):
-            prov = c["source"]
-            item = c["raw"]
-            q = c.get("searchable_text", "")
-            path = None
+    if not force_ai_image:
+        image_providers = cfg("sourcing.image_providers") or ["pexels", "pixabay", "unsplash", "openverse"]
+        for i, q in enumerate(search_queries[:10]):
+            prov = image_providers[i % len(image_providers)] if image_providers else "pexels"
+            items = []
             if prov == "pexels":
-                path = download_pexels_image(item, IMAGES_DIR)
+                items = search_pexels_images(q, count=3)
             elif prov == "pixabay":
-                path = download_pixabay_image(item, IMAGES_DIR)
+                items = search_pixabay_images(q, count=3)
             elif prov == "unsplash":
-                path = download_unsplash_image(item, IMAGES_DIR)
+                items = search_unsplash_images(q, count=3)
             elif prov == "openverse":
-                path = download_openverse_image(item, IMAGES_DIR)
-            if path:
-                _write_stock_meta(path, search_query=q, source=prov, asset_type="image", keywords=[q] if q else [])
-                if prov == "pexels":
-                    insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
-                        source_id=str(item.get("id")), source_url=item.get("url"),
-                        local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
-                elif prov == "pixabay":
-                    insert_asset(conn, script_id=script_id, asset_type="image", source="pixabay",
-                        source_id=str(item.get("id")), local_path=str(path), search_query=q,
-                        width=item.get("webformatWidth"), height=item.get("webformatHeight"))
-                elif prov == "unsplash":
-                    insert_asset(conn, script_id=script_id, asset_type="image", source="unsplash",
-                        source_id=str(item.get("id")), source_url=item.get("urls", {}).get("full"),
-                        local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
-                elif prov == "openverse":
-                    insert_asset(conn, script_id=script_id, asset_type="image", source="openverse",
-                        source_id=str(item.get("id")), source_url=item.get("foreign_landing_url"),
-                        local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
-                images_saved += 1
+                items = search_openverse_images(q, count=3)
+            for item in items[:2]:
+                kid = (prov, str(item.get("id", "")))
+                if kid not in seen_img:
+                    seen_img.add(kid)
+                    scraped_images.append({"source": prov, "raw": item, "searchable_text": q})
 
-    if images_saved < 3:
+    def _score_and_penalize_image(candidates: list) -> None:
+        for c in candidates:
+            c["_score"] = _score_visual_candidate(c, search_queries, category)
+        for c in candidates:
+            if c.get("path") and not c.get("raw"):
+                p = c.get("path")
+                fname = Path(p).name if p else ""
+                size_bytes, mtime_real = None, None
+                try:
+                    if p and Path(p).exists():
+                        st = Path(p).stat()
+                        size_bytes, mtime_real = st.st_size, st.st_mtime
+                except (OSError, TypeError):
+                    pass
+                penalty = get_rejection_penalty(conn, fname, "image", category, "Poor visual quality", size_bytes=size_bytes, mtime_real=mtime_real)
+            else:
+                raw = c.get("raw", {})
+                fname = f"{c['source']}_{raw.get('id', '')}.jpg"
+                penalty = get_rejection_penalty(conn, fname, "image", category, "Poor visual quality")
+            c["_score"] -= penalty * PENALTY_PER_REJECTION
+
+    def _pick_images_from_candidates(candidates: list) -> int:
+        n = 0
+        for c in candidates:
+            if images_saved + n >= 3:
+                break
+            if c.get("path") and not c.get("raw") and Path(c["path"]).exists():
+                path = c["path"]
+                src = c.get("source", "stock")
+                insert_asset(
+                    conn, script_id=script_id, asset_type="image", source=src,
+                    source_id=None, local_path=str(Path(path).resolve()), search_query=c.get("searchable_text", "reuse"),
+                )
+                n += 1
+                logger.info("Script #%d: using %s image (score %.1f) %s", script_id, src, c.get("_score", 0), Path(path).name)
+            elif c.get("raw"):
+                prov = c["source"]
+                item = c["raw"]
+                q = c.get("searchable_text", "")
+                path = None
+                if prov == "pexels":
+                    path = download_pexels_image(item, IMAGES_DIR)
+                elif prov == "pixabay":
+                    path = download_pixabay_image(item, IMAGES_DIR)
+                elif prov == "unsplash":
+                    path = download_unsplash_image(item, IMAGES_DIR)
+                elif prov == "openverse":
+                    path = download_openverse_image(item, IMAGES_DIR)
+                if path:
+                    _write_stock_meta(path, search_query=q, source=prov, asset_type="image", keywords=[q] if q else [])
+                    if prov == "pexels":
+                        insert_asset(conn, script_id=script_id, asset_type="image", source="pexels",
+                            source_id=str(item.get("id")), source_url=item.get("url"),
+                            local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
+                    elif prov == "pixabay":
+                        insert_asset(conn, script_id=script_id, asset_type="image", source="pixabay",
+                            source_id=str(item.get("id")), local_path=str(path), search_query=q,
+                            width=item.get("webformatWidth"), height=item.get("webformatHeight"))
+                    elif prov == "unsplash":
+                        insert_asset(conn, script_id=script_id, asset_type="image", source="unsplash",
+                            source_id=str(item.get("id")), source_url=item.get("urls", {}).get("full"),
+                            local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
+                    elif prov == "openverse":
+                        insert_asset(conn, script_id=script_id, asset_type="image", source="openverse",
+                            source_id=str(item.get("id")), source_url=item.get("foreign_landing_url"),
+                            local_path=str(path), search_query=q, width=item.get("width"), height=item.get("height"))
+                    n += 1
+        return n
+
+    # Phase 1: fill from user pool first
+    user_img_pool = user_images
+    _score_and_penalize_image(user_img_pool)
+    user_img_pool.sort(key=lambda x: x["_score"], reverse=True)
+    images_saved += _pick_images_from_candidates(user_img_pool)
+
+    # Phase 2: fill remaining from external pool
+    external_img_pool = stock_images + ai_images + scraped_images
+    _score_and_penalize_image(external_img_pool)
+    external_img_pool.sort(key=lambda x: x["_score"], reverse=True)
+    images_saved += _pick_images_from_candidates(external_img_pool)
+
+    if not force_ai_image and images_saved < 3:
         for q in search_queries[:4]:
             if images_saved >= 3:
                 break
@@ -1370,25 +1508,29 @@ def source_assets_for_script(script: dict) -> bool:
                     if images_saved >= 3:
                         break
 
-    # AI image fallback when stock insufficient
-    if images_saved < 3 and (cfg("sourcing.ai_image_providers") or []):
+    # AI image fallback when stock insufficient, or when force_ai_image override
+    ai_image_providers = cfg("sourcing.ai_image_providers") or []
+    if images_saved < 3 and ai_image_providers:
         ai_fallback = cfg("sourcing.ai_image_fallback_only") is not False
-        if ai_fallback or images_saved == 0:
-            try:
-                from agents.ai_image_providers import generate_ai_image, write_ai_image_meta
-                prompt_parts = search_queries[:3] if search_queries else ["cinematic vertical", "aesthetic"]
-                prompt = f"Cinematic vertical image, {', '.join(prompt_parts)}, 9:16 portrait, high quality"
-                ai_dir = IMAGES_DIR / "ai"
-                ai_dir.mkdir(parents=True, exist_ok=True)
-                path = generate_ai_image(prompt, aspect_ratio=cfg("sourcing.ai_image_aspect_ratio") or "9:16", dest_dir=ai_dir)
-                if path and path.exists():
-                    write_ai_image_meta(path, keywords=search_queries[:5] or prompt_parts, category=category, prompt=prompt, provider="flux")
-                    insert_asset(conn, script_id=script_id, asset_type="image", source="flux",
-                        source_id=None, local_path=str(path), search_query=prompt)
-                    images_saved += 1
-                    logger.info("Script #%d: AI image generated via Flux", script_id)
-            except Exception as e:
-                logger.warning("AI image fallback failed: %s", e)
+        if force_ai_image or ai_fallback or images_saved == 0:
+            from agents.ai_image_providers import generate_ai_image, write_ai_image_meta
+            ai_dir = IMAGES_DIR / "ai"
+            ai_dir.mkdir(parents=True, exist_ok=True)
+            while images_saved < 3:
+                try:
+                    prompt = _build_ai_image_prompt(search_queries, category)
+                    path, img_provider = generate_ai_image(prompt, aspect_ratio=cfg("sourcing.ai_image_aspect_ratio") or "9:16", dest_dir=ai_dir)
+                    if path and path.exists():
+                        write_ai_image_meta(path, keywords=search_queries[:5] or [prompt[:80]], category=category, prompt=prompt, provider=img_provider or "flux")
+                        insert_asset(conn, script_id=script_id, asset_type="image", source=img_provider or "flux",
+                            source_id=None, local_path=str(path), search_query=prompt)
+                        images_saved += 1
+                        logger.info("Script #%d: AI image generated via %s", script_id, img_provider or "flux")
+                    else:
+                        break
+                except Exception as e:
+                    logger.warning("AI image fallback failed: %s", e)
+                    break
 
     # Step 4: Source background music (with script keywords and topic augmentation)
     music_override = script.get("music_override_path")

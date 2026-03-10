@@ -32,6 +32,27 @@ PROJECT_ROOT = Path(__file__).parent.parent
 ARCHIVE_DIR = PROJECT_ROOT / "output" / "archive"
 ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
+# User asset directories — never delete these; they are the user's library for future videos
+USER_VIDEO_DIR = PROJECT_ROOT / "assets" / "stock_footage" / "user"
+USER_IMAGE_DIR = PROJECT_ROOT / "assets" / "images" / "user"
+USER_MUSIC_DIR = PROJECT_ROOT / "assets" / "music" / "user"
+
+
+def _is_user_asset_path(path: str | Path) -> bool:
+    """Return True if path is in a user asset folder. User assets must never be deleted."""
+    p = Path(path)
+    if not p.is_absolute():
+        p = (PROJECT_ROOT / p).resolve()
+    else:
+        p = p.resolve()
+    for user_dir in (USER_VIDEO_DIR, USER_IMAGE_DIR, USER_MUSIC_DIR):
+        try:
+            p.relative_to(user_dir.resolve())
+            return True
+        except ValueError:
+            pass
+    return False
+
 
 def _safe_filename(title: str) -> str:
     """Convert a video title to a safe filesystem name."""
@@ -66,6 +87,11 @@ def _cleanup_script_assets(script_id: int, conn) -> int:
     for asset in assets:
         path = asset["local_path"]
         if not Path(path).exists():
+            continue
+
+        # Never delete user assets — they are the user's library for future videos
+        if _is_user_asset_path(path):
+            logger.debug("Skipping user asset (never delete): %s", path)
             continue
 
         # Don't delete music files that live in the shared music library
@@ -320,6 +346,9 @@ def cleanup_orphaned_assets() -> dict:
         for asset in assets:
             path = asset["local_path"]
             if not Path(path).exists():
+                continue
+            # Never delete user assets — they are the user's library for future videos
+            if _is_user_asset_path(path):
                 continue
             if asset["asset_type"] == "music" and "music" in str(Path(path).parent).lower():
                 continue

@@ -17,11 +17,12 @@ Generate {n} original reaction/commentary short video scripts (30-60 seconds eac
 IMPORTANT structure rules:
 - "hook" is a SHORT text-only overlay shown on screen in the first 2 seconds (NOT narrated separately)
 - "script_body" is the COMPLETE voiceover narration from start to finish, including the opening hook line and the full analysis. Do NOT repeat the hook as a separate sentence -- weave it naturally into the opening of the body.
+- Use varied punctuation for natural pacing: commas, dashes, rhetorical questions, ellipses (...), and [[pause]] for emphasis. Avoid flat run-on sentences.
 - "cta" is a SHORT text-only overlay shown at the end (NOT narrated separately)
 
 Return ONLY a JSON array. Each element must have these exact keys:
 - "title": clickworthy video title
-- "category": "reaction"
+- "category": "{category}"
 - "hook": short on-screen text overlay for the first 2 seconds (visual only, max 10 words)
 - "script_body": the COMPLETE voiceover narration with [visual cues] inline -- starts with the hook idea woven in naturally, delivers balanced reaction/commentary
 - "cta": short on-screen call-to-action text overlay (visual only, e.g. "What do you think?")

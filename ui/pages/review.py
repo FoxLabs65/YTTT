@@ -234,11 +234,13 @@ def render():
                 if view_status in ("pending", "rejected", "composed"):
                     st.markdown("**Regenerate with changes**")
                     script_row = conn.execute(
-                        "SELECT voice_override, music_override_path, force_ai_audio_override FROM scripts WHERE id = ?",
+                        """SELECT voice_override, music_override_path, force_ai_audio_override,
+                            force_ai_image_override, force_ai_video_override FROM scripts WHERE id = ?""",
                         (video.get("script_id"),),
                     ).fetchone()
-                    current_voice = script_row["voice_override"] if script_row else None
-                    current_music = script_row["music_override_path"] if script_row else None
+                    script_data = dict(script_row) if script_row else {}
+                    current_voice = script_data.get("voice_override")
+                    current_music = script_data.get("music_override_path")
 
                     voices = _get_voice_list()
                     voice_idx = voices.index(current_voice) if current_voice in voices else 0
@@ -268,19 +270,40 @@ def render():
                     use_default_music = new_music_sel == "(use default)"
                     force_ai_checked = st.checkbox(
                         "Use AI-generated music (Suno)",
-                        value=bool(script_row["force_ai_audio_override"]) if script_row else False,
+                        value=bool(script_data.get("force_ai_audio_override")) if script_data else False,
                         key=f"{key}_force_ai",
                         disabled=not use_default_music,
                         help="Force Suno AI music when using default. Ignored when a specific track is selected.",
                     )
                     force_ai_audio = use_default_music and force_ai_checked
+                    force_ai_image_checked = st.checkbox(
+                        "Use AI image (Flux)",
+                        value=bool(script_data.get("force_ai_image_override") or 0) if script_data else False,
+                        key=f"{key}_force_ai_img",
+                        help="Force Flux AI image instead of stock when regenerating.",
+                    )
+                    force_ai_video_checked = st.checkbox(
+                        "Use AI video (Segmind)",
+                        value=bool(script_data.get("force_ai_video_override") or 0) if script_data else False,
+                        key=f"{key}_force_ai_vid",
+                        help="Force Segmind AI video instead of stock when regenerating.",
+                    )
 
                     if st.button("Regenerate Video", key=f"{key}_regen"):
                         script_id = video.get("script_id")
                         voice_val = new_voice if new_voice else None
                         conn.execute(
-                            "UPDATE scripts SET voice_override = ?, music_override_path = ? WHERE id = ?",
-                            (voice_val, new_music_path, script_id),
+                            """UPDATE scripts SET voice_override = ?, music_override_path = ?,
+                                force_ai_audio_override = ?, force_ai_image_override = ?, force_ai_video_override = ?
+                                WHERE id = ?""",
+                            (
+                                voice_val,
+                                new_music_path,
+                                1 if force_ai_audio else 0,
+                                1 if force_ai_image_checked else 0,
+                                1 if force_ai_video_checked else 0,
+                                script_id,
+                            ),
                         )
                         conn.commit()
                         extra = ["--script-id", str(script_id)]
@@ -290,9 +313,13 @@ def render():
                             extra.append("--force-ai-audio")
                         elif new_music_path:
                             extra.extend(["--music-path", new_music_path])
+                        if force_ai_image_checked:
+                            extra.append("--force-ai-image")
+                        if force_ai_video_checked:
+                            extra.append("--force-ai-video")
                         runner = get_runner()
                         runner.start("regenerate", extra)
-                        st.toast("Regenerating video with new voice/music...")
+                        st.toast("Regenerating video with selected overrides...")
                         st.rerun()
 
     # ── Keyboard Shortcuts hint ─────────────────────────────────

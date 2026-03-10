@@ -81,10 +81,17 @@ def cmd_setup():
 
     sourcing_top = config.get("sourcing") or {}
     ai_img_prov = sourcing_top.get("ai_image_providers") or []
-    if ai_img_prov and _key_valid(config.get("replicate_api_token", "")):
-        logger.info("  AI Image (Flux): OK")
-    elif ai_img_prov:
-        logger.info("  AI Image (Flux): NOT CONFIGURED — add replicate_api_token in Setup > AI Image & Video")
+    if ai_img_prov:
+        if "flux" in ai_img_prov:
+            if _key_valid(config.get("replicate_api_token", "")):
+                logger.info("  AI Image (Flux): OK")
+            else:
+                logger.info("  AI Image (Flux): NOT CONFIGURED — add replicate_api_token in Setup > AI Image & Video")
+        if "segmind_flux" in ai_img_prov:
+            if _key_valid(config.get("segmind_api_key", "")):
+                logger.info("  AI Image (Segmind Flux): OK")
+            else:
+                logger.info("  AI Image (Segmind Flux): NOT CONFIGURED — add segmind_api_key in Setup > AI Image & Video")
 
     ai_vid_prov = sourcing_top.get("ai_video_providers") or []
     if ai_vid_prov and _key_valid(config.get("segmind_api_key", "")):
@@ -327,8 +334,10 @@ def cmd_regenerate(
     voice: str | None = None,
     music_path: str | None = None,
     force_ai_audio: bool = False,
+    force_ai_image: bool = False,
+    force_ai_video: bool = False,
 ):
-    """Regenerate a single video with optional voice, music, and force-AI-audio overrides."""
+    """Regenerate a single video with optional voice, music, and force-AI overrides."""
     from models.database import init_db, get_connection
     from agents.sourcing import run_sourcing
     from agents.composer import run_composer
@@ -350,10 +359,25 @@ def cmd_regenerate(
 
     # When force_ai_audio, clear music_override_path so sourcing runs with force_ai
     final_music = None if force_ai_audio else (music_path or None)
-    force_ai_val = 1 if force_ai_audio else 0
     conn.execute(
-        "UPDATE scripts SET voice_override = ?, music_override_path = ?, force_ai_audio_override = ?, status = ? WHERE id = ?",
-        (voice or None, final_music, force_ai_val, "pending_assets", script_id),
+        """UPDATE scripts SET
+            voice_override = ?,
+            music_override_path = ?,
+            force_ai_audio_override = ?,
+            force_ai_image_override = ?,
+            force_ai_video_override = ?,
+            user_selected_asset_paths = NULL,
+            status = ?
+        WHERE id = ?""",
+        (
+            voice or None,
+            final_music,
+            1 if force_ai_audio else 0,
+            1 if force_ai_image else 0,
+            1 if force_ai_video else 0,
+            "pending_assets",
+            script_id,
+        ),
     )
     conn.commit()
     conn.close()
@@ -361,7 +385,7 @@ def cmd_regenerate(
     music_desc = "force AI" if force_ai_audio else (music_path or "default")
     logger.info("Regenerating script #%d (voice=%s, music=%s)", script_id, voice or "default", music_desc)
     _run_phase("Sourcing", run_sourcing, retries=2)
-    _run_phase("Composer", run_composer, retries=2)
+    _run_phase("Composer", lambda: run_composer(script_id=script_id), retries=2)
     logger.info("Regenerate complete for script #%d", script_id)
 
 
@@ -596,6 +620,8 @@ def main():
     parser.add_argument("--voice", type=str, help="Voice override for regenerate (e.g. en-US-AndrewMultilingualNeural)")
     parser.add_argument("--music-path", type=str, help="Music file path override for regenerate")
     parser.add_argument("--force-ai-audio", action="store_true", help="Force AI-generated music (Suno) for regenerate")
+    parser.add_argument("--force-ai-image", action="store_true", help="Force AI image (Flux) for regenerate")
+    parser.add_argument("--force-ai-video", action="store_true", help="Force AI video (Segmind) for regenerate")
     parser.add_argument("--platform", type=str, choices=["youtube", "tiktok", "both"], help="Discovery: scrape youtube, tiktok, or both. Upload: youtube or tiktok only.")
     parser.add_argument("--youtube-queries", type=str, help="Comma-separated YouTube queries for discovery (overrides config for this run)")
     parser.add_argument("--tiktok-hashtags", type=str, help="Comma-separated TikTok hashtags for discovery (overrides config for this run)")
@@ -651,6 +677,8 @@ def main():
             voice=args.voice,
             music_path=args.music_path,
             force_ai_audio=args.force_ai_audio,
+            force_ai_image=args.force_ai_image,
+            force_ai_video=args.force_ai_video,
         )
     elif args.reaction_discovery:
         from agents.reaction_sourcing import discover_candidates
